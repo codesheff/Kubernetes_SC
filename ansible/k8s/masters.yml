@@ -1,0 +1,160 @@
+
+- name: Configuration of master node
+  hosts: all
+  become: yes
+  tasks:
+    # - name: install Pod network
+    #   become: yes
+    #   #become_user: cranie
+    #   environment:
+    #     KUBECONFIG: /etc/kubernetes/admin.conf
+    #   shell: kubectl apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.6/manifests/calico.yaml
+    #   args:
+    #     chdir: /home/cranie
+
+    - name: Remove master node taint to allow scheduling on master
+      become: yes
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      shell: kubectl taint nodes master node-role.kubernetes.io/control-plane-
+      when: "'masters' in group_names"
+
+
+
+# - name: Deploy Calico using Tigera operator
+#   hosts: masters
+#   become: yes
+#   vars:
+#     cranie_home: /home/cranie
+#     calico_version: "v3.30.3"
+#     crd_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/operator-crds.yaml"
+#     operator_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml"
+#     custom_resources_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/custom-resources.yaml"
+#     custom_resources_local: "{{ cranie_home }}/custom-resources.yaml"
+
+#   tasks:
+
+#     - name: Download Tigera operator CRDs
+#       become_user: cranie
+#       get_url:
+#         url: "{{ crd_url }}"
+#         dest: "{{ cranie_home }}/operator-crds.yaml"
+#         mode: '0644'
+
+#     - name: Apply Tigera operator CRDs
+#       become_user: cranie
+#       shell: kubectl create -f operator-crds.yaml
+#       args:
+#         chdir: "{{ cranie_home }}"
+#       register: crd_apply
+#       changed_when: "'created' in crd_apply.stdout or 'already exists' in crd_apply.stdout"
+    
+#     - name: Download Tigera operator manifest
+#       become_user: cranie
+#       get_url:
+#         url: "{{ operator_url }}"
+#         dest: "{{ cranie_home }}/tigera-operator.yaml"
+#         mode: '0644'
+
+#     - name: Apply Tigera operator
+#       become_user: cranie
+#       shell: kubectl create -f tigera-operator.yaml
+#       args:
+#         chdir: "{{ cranie_home }}"
+#       register: operator_apply
+#       changed_when: "'created' in operator_apply.stdout or 'already exists' in operator_apply.stdout"
+
+#     - name: Download Calico custom resources manifest
+#       become_user: cranie
+#       get_url:
+#         url: "{{ custom_resources_url }}"
+#         dest: "{{ custom_resources_local }}"
+#         mode: '0644'
+
+#     # Optional: Add a task here to template or modify the custom-resources.yaml if needed
+
+#     - name: Apply Calico custom resources manifest
+#       become_user: cranie
+#       shell: kubectl create -f custom-resources.yaml
+#       args:
+#         chdir: "{{ cranie_home }}"
+#       register: cr_apply
+#       changed_when: "'created' in cr_apply.stdout or 'already exists' in cr_apply.stdout"
+
+#     - name: Wait for Calico pods to be running in calico-system namespace
+#       become_user: cranie
+#       command: kubectl get pods -n calico-system --field-selector=status.phase=Running
+#       register: calico_pods
+#       retries: 20
+#       delay: 15
+#       until: calico_pods.stdout_lines | length > 0
+
+
+
+
+# - name: Generating token on master node and token deployment to worker node
+#   hosts: masters
+#   become: yes
+#   tasks:
+#     - name: Load kube-controller-manager manifest
+#       slurp:
+#         src: /etc/kubernetes/manifests/kube-controller-manager.yaml
+#       register: kube_controller_manifest_b64
+
+#     - name: Decode manifest content
+#       set_fact:
+#         kube_controller_manifest_content: "{{ kube_controller_manifest_b64.content | b64decode }}"
+
+#     - name: Add or update --cluster-cidr in manifest
+#       replace:
+#         path: /etc/kubernetes/manifests/kube-controller-manager.yaml
+#         regexp: '(- --cluster-cidr=)[^\s]+'
+#         replace: '\1{{ cluster_cidr }}'
+#       vars:
+#         cluster_cidr: "10.96.0.0/16"
+#       when: "'--cluster-cidr=' in kube_controller_manifest_content"
+
+#     - name: Append --cluster-cidr if not present
+#       lineinfile:
+#         path: /etc/kubernetes/manifests/kube-controller-manager.yaml
+#         insertafter: 'command:'
+#         line: "    - --cluster-cidr={{ cluster_cidr }}"
+#       vars:
+#         cluster_cidr: "10.96.0.0/16"
+#       when: "'--cluster-cidr=' not in kube_controller_manifest_content"
+
+#     - name: Get current kube-proxy ConfigMap
+#       become: yes
+#       become_user: cranie
+#       command: kubectl -n kube-system get configmap kube-proxy -o yaml
+#       register: kubeproxy_configmap_yaml
+
+#     - name: Parse kube-proxy configmap YAML
+#       set_fact:
+#         kubeproxy_config: "{{ kubeproxy_configmap_yaml.stdout | from_yaml }}"
+
+#     - name: Update clusterCIDR in kube-proxy config
+#       set_fact:
+#         new_kubeproxy_config: >-
+#           {{
+#             kubeproxy_config |
+#             combine({
+#               'data': kubeproxy_config.data |
+#               combine({
+#                 'config.conf': (
+#                   (kubeproxy_config.data['config.conf'] | from_yaml) |
+#                   combine({'clusterCIDR': '10.96.0.0/16'})
+#                 ) | to_nice_yaml(indent=2)
+#               })
+#             })
+#           }}
+
+#     - name: Write updated kube-proxy ConfigMap to temp file
+#       copy:
+#         dest: /tmp/kube-proxy-patched.yaml
+#         content: "{{ new_kubeproxy_config | to_nice_yaml }}"
+
+#     - name: Apply patched kube-proxy ConfigMap
+#       become: yes
+#       become_user: cranie
+#       command: kubectl apply -f /tmp/kube-proxy-patched.yaml -n kube-system

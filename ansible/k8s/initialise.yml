@@ -1,0 +1,19 @@
+
+- name: Generating token on master node and token deployment to worker node
+  hosts: masters
+  become: yes
+  tasks:
+    - name: Initialize Kubernetes Cluster
+    # --apiserver-advertise-address=192.168.0.70
+      shell: kubeadm init --pod-network-cidr=10.244.0.0/16  --ignore-preflight-errors=all --apiserver-advertise-address=192.168.0.70 --upload-certs
+      # --control-plane-endpoint 192.168.0.70
+      # when: "'masters' in group_names"
+
+
+    - name: create .kube directory and copy kube config file
+      shell: "{{ item }}"
+      loop:
+        -  mkdir -p /home/cranie/.kube
+        -  cp -f /etc/kubernetes/admin.conf /home/cranie/.kube/config
+        -  chown -R cranie:cranie /home/cranie/.kube/
+      # when: "'masters' in group_names"

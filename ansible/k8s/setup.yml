@@ -1,0 +1,121 @@
+
+
+- name: Initialize master and worker nodes as root
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tasks:
+
+    - name: disable firewalld for labs
+      service:
+        name: firewalld
+        state: stopped
+        enabled: false
+
+    - name: Disable SWAP
+      shell: |
+        swapoff -a
+
+    - name: Disable SWAP in fstab
+      lineinfile:
+        path: /etc/fstab
+        regexp: '^.*swap.*$'
+        line: '#\0'
+        backrefs: yes
+
+    - name: ensure net.bridge.bridge-nf-call-ip6tables is set to 1
+      sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: '1'
+        state: present
+
+
+    - name: Installation of yum-utils
+      yum:
+        name: yum-utils
+        state: present
+        update_cache: yes
+
+
+
+    - name: Add Docker CE repository for RHEL/CentOS
+      yum_repository:
+        name: docker-ce
+        description: Docker CE Stable - $releasever
+        baseurl: https://download.docker.com/linux/centos/$releasever/$basearch/stable
+        gpgcheck: yes
+        gpgkey: https://download.docker.com/linux/centos/gpg
+        enabled: yes
+
+    - name: Installation of Docker on RHEL/CentOS
+      yum:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: yes
+
+
+    - name: Setting value of SystemdCgroup
+      shell: |
+        containerd config default | sudo tee /etc/containerd/config.toml | grep SystemdCgroup
+        sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+
+    - name : Starting Service of Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+
+    # - name: Add Kubernetes YUM repository for RHEL/CentOS
+    #   yum_repository:
+    #     name: kubernetes
+    #     description: Kubernetes Repository
+    #     baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+    #     gpgcheck: yes
+    #     repo_gpgcheck: yes
+    #     gpgkey: https://packages.cloud.google.com/yum/doc/yum-key.gpg
+    #         https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+    #     enabled: yes
+
+    - name: Add Kubernetes YUM repository for RHEL/CentOS
+      shell: |
+        cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+        [kubernetes]
+        name=Kubernetes
+        baseurl=https://pkgs.k8s.io/core:/stable:/v1.33/rpm/
+        enabled=1
+        gpgcheck=1
+        gpgkey=https://pkgs.k8s.io/core:/stable:/v1.33/rpm/repodata/repomd.xml.key
+        EOF
+      args:
+        creates: /etc/yum.repos.d/kubernetes.repo
+    #         exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+
+
+    - name: Install kubelet and kubeadm
+      yum:
+        name:
+          - kubelet
+          - kubeadm
+        state: present
+        update_cache: yes
+
+
+
+
+
+
+    - name: start kubelet
+      service:
+        name: kubelet
+        enabled: yes
+        state: started
+
+    - name: Install kubectl
+      yum:
+        name: kubectl
+        state: present
+      when: "'masters' in group_names"

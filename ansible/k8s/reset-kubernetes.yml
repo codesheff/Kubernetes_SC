@@ -1,0 +1,243 @@
+---
+- name: Reset and uninstall Kubernetes cluster components
+  hosts: all
+  become: true
+  tasks:
+
+    - name: Ensure python3-pip is installed
+      package:
+        name: python3-pip
+        state: present
+
+    - name: Install Kubernetes Python client library with pip
+      pip:
+        name: kubernetes
+        executable: /usr/bin/pip3
+        state: present
+
+    # curl -skSL https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/v4.11.0/deploy/uninstall-driver.sh | bash -s v4.11.0 --
+    # git clone https://github.com/kubernetes-csi/csi-driver-nfs.git
+    # cd csi-driver-nfs
+    # git checkout v4.11.0
+    # ./deploy/uninstall-driver.sh v4.11.0 local
+
+    # helm uninstall csi-driver-nfs -n kube-system
+    # helm repo remove csi-driver-nfs
+
+    - name: Delete Calico namespace if present
+      kubernetes.core.k8s:
+        state: absent
+        kind: Namespace
+        name: calico-system
+      ignore_errors: yes
+
+    - name: Delete MetalLB namespace if present
+      kubernetes.core.k8s:
+        state: absent
+        kind: Namespace
+        name: metallb-system
+      ignore_errors: yes
+
+    - name: Delete Calico CRDs
+      shell: |
+        kubectl get crd | grep 'calico' | awk '{print $1}' | xargs -r kubectl delete crd
+      args:
+        warn: false
+      ignore_errors: yes
+
+    - name: Delete MetalLB CRDs
+      shell: |
+        kubectl get crd | grep 'metallb' | awk '{print $1}' | xargs -r kubectl delete crd
+      args:
+        warn: false
+      ignore_errors: yes
+
+    - name: Delete kube-proxy DaemonSet in kube-system
+      kubernetes.core.k8s:
+        state: absent
+        api_version: apps/v1
+        kind: DaemonSet
+        namespace: kube-system
+        name: kube-proxy
+      ignore_errors: yes
+
+    - name: Remove leftover Calico network interfaces
+      shell: |
+        ip link delete cali-default || true
+        ip link delete tunl0 || true
+      ignore_errors: yes
+
+
+
+
+
+    - name: Stop kubelet service
+      ansible.builtin.systemd:
+        name: kubelet
+        state: stopped
+        enabled: false
+      ignore_errors: yes
+
+    - name: Stop containerd service
+      ansible.builtin.systemd:
+        name: containerd
+        state: stopped
+        enabled: false
+      ignore_errors: yes
+
+    - name: Reset kubeadm cluster state (kubeadm reset)
+      ansible.builtin.command:
+        cmd: kubeadm reset -f
+      ignore_errors: yes
+
+    - name: Remove Kubernetes directory
+      ansible.builtin.file:
+        path: /etc/kubernetes
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove etcd data directory
+      ansible.builtin.file:
+        path: /var/lib/etcd
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove kubernetes directory under /var/lib
+      ansible.builtin.file:
+        path: /var/lib/kubelet
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Kubernetes CNI configuration
+      ansible.builtin.file:
+        path: /etc/cni/net.d
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove admin kubeconfig from user home
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Kubernetes yum repo file (RHEL/CentOS)
+      ansible.builtin.file:
+        path: /etc/yum.repos.d/kubernetes.repo
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Kubernetes apt repo file (Debian/Ubuntu)
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/kubernetes.list
+        state: absent
+      ignore_errors: yes
+
+    - name: Clean all yum caches (RHEL) or apt caches (Ubuntu)
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "dnf clean all"
+        - "apt-get clean"
+      ignore_errors: yes
+
+    - name: Remove installed Kubernetes packages (kubelet, kubeadm, kubectl)
+      ansible.builtin.package:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Docker and containerd packages (optional)
+      ansible.builtin.package:
+        name:
+          - docker-ce
+          - containerd.io
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Docker CE repo (optional, RHEL)
+      ansible.builtin.file:
+        path: /etc/yum.repos.d/docker-ce.repo
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove containerd config files
+      ansible.builtin.file:
+        path: /etc/containerd/config.toml
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove containerd config directory if empty
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove CNI binaries directory
+      ansible.builtin.file:
+        path: /opt/cni/bin
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Kubernetes logs (optional)
+      ansible.builtin.file:
+        path: /var/log/pods
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove kubelet service file and reload systemd daemon
+      ansible.builtin.file:
+        path: /etc/systemd/system/kubelet.service
+        state: absent
+      ignore_errors: yes
+
+    - name: Reload systemd daemon
+      ansible.builtin.command: systemctl daemon-reload
+      ignore_errors: yes
+
+    - name: Remove swap off entry (optional cleanup)
+      ansible.builtin.command: swapoff -a
+      ignore_errors: yes
+
+    - name: Uncomment swap entries in /etc/fstab (to enable swap again)
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^#(\s*[^#]\S+\s+\S+\s+swap\s+)'
+        replace: '\1'
+      ignore_errors: yes
+
+    - name: Provide a summary
+      ansible.builtin.debug:
+        msg: "Kubernetes and related packages reset and cleaned on {{ inventory_hostname }}"
+
+
+
+
+    - name: Stop containerd service if running
+      ansible.builtin.systemd:
+        name: containerd
+        state: stopped
+      ignore_errors: true
+
+    - name: Disable containerd service
+      ansible.builtin.systemd:
+        name: containerd
+        enabled: false
+      ignore_errors: true
+
+    - name: Remove containerd systemd unit file
+      ansible.builtin.file:
+        path: /etc/systemd/system/containerd.service
+        state: absent
+
+    - name: Reload systemd to update unit files after removal
+      ansible.builtin.command: systemctl daemon-reload
+
+
+
+    - name: Remove Kubernetes Python client library
+      pip:
+        name: kubernetes
+        executable: /usr/bin/pip3
+        state: absent

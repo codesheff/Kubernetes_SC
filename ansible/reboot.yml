@@ -1,0 +1,11 @@
+---
+- name: Reboot all hosts and wait for reboot completion
+  hosts: all
+  become: true
+  tasks:
+    - name: Reboot the server and wait for it to come back
+      ansible.builtin.reboot:
+        reboot_timeout: 600      # timeout for waiting reboot in seconds (adjust if needed)
+        pre_reboot_delay: 5      # wait before rebooting (seconds)
+        post_reboot_delay: 10    # wait after reboot before checking connection (seconds)
+        test_command: whoami     # command to test successful reboot & connection

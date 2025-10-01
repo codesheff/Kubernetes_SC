@@ -1,0 +1,60 @@
+
+- name: Generating token on master node and token deployment to worker node
+  hosts: all
+  become: yes
+  tasks:
+    - name: get join command
+      become: yes
+      become_user: cranie
+      shell: kubeadm token create --print-join-command
+      register: join_command_raw
+      when: "'masters' in group_names"
+
+    - name: set join command
+      set_fact:
+        join_command: "{{ join_command_raw.stdout_lines[0] }}"
+      when: "'masters' in group_names"
+
+    - name: Set join command globally
+      set_fact:
+        global_join_command: "{{ join_command }} --ignore-preflight-errors all"
+      when: "'masters' in group_names"
+      run_once: true
+
+    - name: join cluster
+      become: yes
+      shell: "{{ global_join_command }}"
+      args:
+        chdir: $HOME
+      when: "'workers' in group_names"
+
+
+    - name: Label worker nodes
+      become: yes
+      become_user: cranie
+      shell: kubectl label node {{ item }} node-role.kubernetes.io/worker=worker
+      when: "'masters' in group_names"
+      loop: "{{ groups['workers'] }}"
+
+
+    - name: Install CNI plugins
+      shell: |
+        mkdir -p /opt/cni/bin &&
+        curl -L -o cni-plugins.tgz https://github.com/containernetworking/plugins/releases/download/v1.1.1/cni-plugins-linux-amd64-v1.1.1.tgz &&
+        tar -C /opt/cni/bin -xzf cni-plugins.tgz
+
+
+    - name: Deploy Flannel manifest
+      shell: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: "'masters' in group_names"
+
+     # helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+     # helm install csi-driver-nfs csi-driver-nfs/csi-driver-nfs --namespace kube-system --version 4.11.0
+
+      # THIS NEEDS TO BE ADDED
+      #### curl -skSL https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/v4.11.0/deploy/install-driver.sh | bash -s v4.11.0 --
+      # git clone https://github.com/kubernetes-csi/csi-driver-nfs.git
+      # cd csi-driver-nfs
+      # ./deploy/install-driver.sh v4.11.0 local
