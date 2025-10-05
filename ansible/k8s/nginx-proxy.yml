@@ -1,0 +1,96 @@
+---
+# ============================================
+# NGINX Reverse Proxy Setup for Ingress
+# ============================================
+# This playbook sets up nginx on the master node to proxy
+# HTTP traffic from port 80 to the ingress controller NodePort
+
+- name: Setup NGINX reverse proxy for Ingress Controller
+  hosts: master
+  become: yes
+  gather_facts: yes
+  vars:
+    ingress_nodeport: 31877
+    
+  tasks:
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+
+    - name: Create nginx configuration for ingress proxy
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name shield.mcu.com hydra.mcu.com mcu.com *.mcu.com;
+              
+              # Proxy all requests to ingress controller
+              location / {
+                  proxy_pass http://127.0.0.1:{{ ingress_nodeport }};
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Host $host;
+              }
+          }
+        dest: /etc/nginx/sites-available/ingress-proxy
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable the ingress proxy site
+      file:
+        src: /etc/nginx/sites-available/ingress-proxy
+        dest: /etc/nginx/sites-enabled/ingress-proxy
+        state: link
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Test nginx configuration
+      command: nginx -t
+      register: nginx_test
+      changed_when: false
+
+    - name: Display nginx test result
+      debug:
+        msg: "Nginx configuration test: {{ nginx_test.stdout }}"
+
+    - name: Restart and enable nginx
+      systemd:
+        name: nginx
+        state: restarted
+        enabled: yes
+
+    - name: Check nginx status
+      command: systemctl is-active nginx
+      register: nginx_status
+      changed_when: false
+
+    - name: Display success message
+      debug:
+        msg: |
+          ============================================
+          NGINX REVERSE PROXY SETUP COMPLETE!
+          ============================================
+          
+          ✅ Nginx is {{ nginx_status.stdout }}
+          ✅ Reverse proxy configured for port 80 → {{ ingress_nodeport }}
+          
+          🌐 You can now access these URLs without port numbers:
+          - http://shield.mcu.com/
+          - http://hydra.mcu.com/
+          - http://mcu.com/shield
+          - http://mcu.com/hydra
+          
+          🔧 Configuration Details:
+          - Nginx proxies requests from port 80 to NodePort {{ ingress_nodeport }}
+          - Supports all *.mcu.com subdomains
+          - Preserves original Host headers for ingress routing
+          
+          ============================================

@@ -1,0 +1,231 @@
+---
+# ============================================
+# Revert to NGINX Reverse Proxy (WiFi Compatible)
+# ============================================
+# MetalLB Layer 2 mode doesn't work with WiFi networks
+# because WiFi APs block ARP spoofing. This reverts to
+# a working nginx reverse proxy solution.
+
+- name: Setup NGINX Reverse Proxy for WiFi Environment
+  hosts: master
+  become: yes
+  gather_facts: yes
+  vars:
+    ingress_namespace: "ingress-nginx"
+    
+  tasks:
+    # ============================================
+    # Revert MetalLB Configuration
+    # ============================================
+    
+    - name: Change ingress service back to NodePort
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl patch svc ingress-nginx-controller -n {{ ingress_namespace }} -p '{"spec":{"type":"NodePort"}}'
+      register: service_patch
+      changed_when: "'patched' in service_patch.stdout"
+
+    - name: Get NodePort details
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        HTTP_PORT=$(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+        HTTPS_PORT=$(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}')
+        echo "HTTP_NODEPORT=$HTTP_PORT"
+        echo "HTTPS_NODEPORT=$HTTPS_PORT"
+      register: nodeport_info
+      changed_when: false
+
+    - name: Extract NodePort values
+      set_fact:
+        http_nodeport: "{{ nodeport_info.stdout_lines | select('match', 'HTTP_NODEPORT=.*') | first | regex_replace('HTTP_NODEPORT=', '') }}"
+        https_nodeport: "{{ nodeport_info.stdout_lines | select('match', 'HTTPS_NODEPORT=.*') | first | regex_replace('HTTPS_NODEPORT=', '') }}"
+
+    # ============================================
+    # Setup Improved NGINX Reverse Proxy
+    # ============================================
+
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+
+    - name: Create improved nginx configuration
+      copy:
+        content: |
+          # Global nginx configuration for ingress proxy
+          upstream ingress_backend {
+              server 127.0.0.1:{{ http_nodeport }};
+          }
+          
+          upstream ingress_backend_ssl {
+              server 127.0.0.1:{{ https_nodeport }};
+          }
+          
+          # HTTP Server
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              
+              # Support all domains
+              server_name _;
+              
+              # Improved proxy settings
+              location / {
+                  proxy_pass http://ingress_backend;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Host $host;
+                  proxy_set_header X-Forwarded-Port $server_port;
+                  
+                  # Timeouts
+                  proxy_connect_timeout 5s;
+                  proxy_send_timeout 60s;
+                  proxy_read_timeout 60s;
+                  
+                  # Buffer settings
+                  proxy_buffering on;
+                  proxy_buffer_size 4k;
+                  proxy_buffers 8 4k;
+              }
+              
+              # Health check endpoint
+              location /nginx-health {
+                  access_log off;
+                  return 200 "nginx proxy healthy\n";
+                  add_header Content-Type text/plain;
+              }
+          }
+          
+          # HTTPS Server (optional)
+          server {
+              listen 443 ssl default_server;
+              listen [::]:443 ssl default_server;
+              
+              server_name _;
+              
+              # Self-signed certificate (for testing)
+              ssl_certificate /etc/ssl/certs/ssl-cert-snakeoil.pem;
+              ssl_certificate_key /etc/ssl/private/ssl-cert-snakeoil.key;
+              
+              location / {
+                  proxy_pass http://ingress_backend_ssl;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Forwarded-Host $host;
+                  proxy_set_header X-Forwarded-Port $server_port;
+              }
+          }
+        dest: /etc/nginx/sites-available/ingress-proxy
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable the ingress proxy site
+      file:
+        src: /etc/nginx/sites-available/ingress-proxy
+        dest: /etc/nginx/sites-enabled/ingress-proxy
+        state: link
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Test nginx configuration
+      command: nginx -t
+      register: nginx_test
+      changed_when: false
+
+    - name: Restart and enable nginx
+      systemd:
+        name: nginx
+        state: restarted
+        enabled: yes
+
+    # ============================================
+    # Verification and Testing
+    # ============================================
+
+    - name: Test nginx proxy functionality
+      shell: |
+        # Test basic connectivity
+        echo "=== Testing NGINX Proxy ==="
+        if curl -s -m 5 "http://127.0.0.1/nginx-health" | grep -q "healthy"; then
+          echo "✅ NGINX proxy health check: SUCCESS"
+        else
+          echo "❌ NGINX proxy health check: FAILED"
+        fi
+        
+        # Test ingress routing through proxy
+        if curl -s -m 5 -H "Host: shield.mcu.com" "http://127.0.0.1" | grep -q "S.H.I.E.L.D"; then
+          echo "✅ Shield routing through proxy: SUCCESS"
+        else
+          echo "❌ Shield routing through proxy: FAILED"
+        fi
+        
+        if curl -s -m 5 -H "Host: hydra.mcu.com" "http://127.0.0.1" | grep -q "Hydra"; then
+          echo "✅ Hydra routing through proxy: SUCCESS"
+        else
+          echo "❌ Hydra routing through proxy: FAILED"
+        fi
+        
+        # Test path-based routing
+        if curl -s -m 5 -H "Host: mcu.com" "http://127.0.0.1/shield" | grep -q "S.H.I.E.L.D"; then
+          echo "✅ Path-based shield routing: SUCCESS"
+        else
+          echo "❌ Path-based shield routing: FAILED"
+        fi
+      register: proxy_test
+      changed_when: false
+
+    - name: Get final service status
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o wide
+      register: final_service
+      changed_when: false
+
+    - name: Display final configuration
+      debug:
+        msg: |
+          ============================================
+          NGINX REVERSE PROXY SETUP COMPLETE
+          ============================================
+          
+          🔧 Configuration Details:
+          - Service Type: NodePort (WiFi compatible)
+          - HTTP NodePort: {{ http_nodeport }}
+          - HTTPS NodePort: {{ https_nodeport }}
+          - NGINX Proxy: Port 80 → {{ http_nodeport }}, Port 443 → {{ https_nodeport }}
+          
+          📡 Service Status:
+          {{ final_service.stdout }}
+          
+          🧪 Proxy Tests:
+          {{ proxy_test.stdout }}
+          
+          🌐 Access URLs:
+          - http://192.168.1.114/ (with Host headers)
+          - http://shield.mcu.com/ (with DNS/hosts file)
+          - http://hydra.mcu.com/ (with DNS/hosts file)
+          - http://mcu.com/shield (with DNS/hosts file)
+          - http://mcu.com/hydra (with DNS/hosts file)
+          
+          📋 Hosts File Entries:
+          # Add to /etc/hosts (Linux/Mac) or C:\Windows\System32\drivers\etc\hosts (Windows)
+          192.168.1.114 shield.mcu.com
+          192.168.1.114 hydra.mcu.com
+          192.168.1.114 mcu.com
+          
+          🎯 Why This Works on WiFi:
+          - Uses NodePort (no Layer 2 ARP requirements)
+          - NGINX proxy on master node handles routing
+          - Compatible with WiFi access point restrictions
+          - Standard HTTP/HTTPS ports for browser compatibility
+          
+          ============================================

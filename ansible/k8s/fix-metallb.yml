@@ -1,0 +1,195 @@
+---
+# ============================================
+# Fix MetalLB Layer 2 Configuration
+# ============================================
+# This playbook fixes MetalLB Layer 2 announcement issues
+
+- name: Fix MetalLB Layer 2 Configuration
+  hosts: master
+  become: yes
+  gather_facts: yes
+  vars:
+    metallb_namespace: "metallb-system"
+    
+  tasks:
+    # ============================================
+    # Network Interface Discovery
+    # ============================================
+    
+    - name: Get network interface information
+      shell: |
+        echo "=== Network Interfaces ==="
+        ip addr show
+        echo ""
+        echo "=== Default Route ==="
+        ip route show default
+        echo ""
+        echo "=== ARP Table ==="
+        arp -a
+      register: network_info
+      changed_when: false
+
+    - name: Display network information
+      debug:
+        msg: |
+          Network Configuration:
+          {{ network_info.stdout }}
+
+    - name: Get primary network interface
+      shell: ip route show default | awk '/default/ { print $5 }' | head -1
+      register: primary_interface
+      changed_when: false
+
+    - name: Display primary interface
+      debug:
+        msg: "Primary network interface: {{ primary_interface.stdout }}"
+
+    # ============================================
+    # Update MetalLB L2Advertisement
+    # ============================================
+
+    - name: Create updated L2Advertisement with specific interface
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        cat <<EOF | kubectl apply -f -
+        apiVersion: metallb.io/v1beta1
+        kind: L2Advertisement
+        metadata:
+          name: default
+          namespace: {{ metallb_namespace }}
+        spec:
+          ipAddressPools:
+          - default
+          interfaces:
+          - {{ primary_interface.stdout }}
+        EOF
+      register: l2_update
+      changed_when: "'configured' in l2_update.stdout or 'created' in l2_update.stdout"
+
+    - name: Display L2Advertisement update result
+      debug:
+        msg: "L2Advertisement update: {{ l2_update.stdout }}"
+
+    # ============================================
+    # Restart MetalLB Speaker
+    # ============================================
+
+    - name: Restart MetalLB speaker to pick up new configuration
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl rollout restart daemonset/speaker -n {{ metallb_namespace }}
+      register: speaker_restart
+      changed_when: true
+
+    - name: Wait for MetalLB speaker to be ready
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl rollout status daemonset/speaker -n {{ metallb_namespace }} --timeout=120s
+      register: speaker_status
+      changed_when: false
+
+    - name: Display speaker restart result
+      debug:
+        msg: "Speaker restart status: {{ speaker_status.stdout }}"
+
+    # ============================================
+    # Force LoadBalancer Service Recreation
+    # ============================================
+
+    - name: Force recreation of LoadBalancer service to trigger IP reallocation
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        
+        # Delete and recreate the service to force IP reallocation
+        kubectl patch svc ingress-nginx-controller -n ingress-nginx -p '{"spec":{"type":"ClusterIP"}}'
+        sleep 5
+        kubectl patch svc ingress-nginx-controller -n ingress-nginx -p '{"spec":{"type":"LoadBalancer"}}'
+      register: service_recreation
+      changed_when: true
+
+    - name: Wait for new IP assignment
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+      register: new_ip_check
+      until: new_ip_check.stdout != ""
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    # ============================================
+    # Verification
+    # ============================================
+
+    - name: Get final service status
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n ingress-nginx -o wide
+      register: final_service
+      changed_when: false
+
+    - name: Test new IP connectivity from master node
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        NEW_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        
+        echo "Testing new IP: $NEW_IP"
+        
+        # Test from localhost (should work)
+        if curl -s -m 5 "http://127.0.0.1:31877" > /dev/null 2>&1; then
+          echo "✅ Localhost NodePort: SUCCESS"
+        else
+          echo "❌ Localhost NodePort: FAILED"
+        fi
+        
+        # Test ping to new IP
+        if ping -c 1 -W 2 "$NEW_IP" > /dev/null 2>&1; then
+          echo "✅ Ping to $NEW_IP: SUCCESS"
+        else
+          echo "❌ Ping to $NEW_IP: FAILED"
+        fi
+        
+        # Test HTTP to new IP
+        if curl -s -m 5 "http://$NEW_IP" > /dev/null 2>&1; then
+          echo "✅ HTTP to $NEW_IP: SUCCESS"
+        else
+          echo "❌ HTTP to $NEW_IP: FAILED"
+        fi
+        
+        # Test with Host header
+        if curl -s -m 5 -H "Host: shield.mcu.com" "http://$NEW_IP" | grep -q "S.H.I.E.L.D"; then
+          echo "✅ Shield routing via $NEW_IP: SUCCESS"
+        else
+          echo "❌ Shield routing via $NEW_IP: FAILED"
+        fi
+      register: connectivity_test
+      changed_when: false
+
+    - name: Display final results
+      debug:
+        msg: |
+          ============================================
+          METALLB LAYER 2 CONFIGURATION FIXED
+          ============================================
+          
+          🔧 Network Interface: {{ primary_interface.stdout }}
+          
+          📡 Service Status:
+          {{ final_service.stdout }}
+          
+          🧪 Connectivity Tests:
+          {{ connectivity_test.stdout }}
+          
+          📋 New External IP: {{ new_ip_check.stdout }}
+          
+          🎯 Testing Commands:
+          # Test directly with IP:
+          curl -H "Host: shield.mcu.com" http://{{ new_ip_check.stdout }}
+          curl -H "Host: hydra.mcu.com" http://{{ new_ip_check.stdout }}
+          
+          # Update your hosts file with new IP:
+          {{ new_ip_check.stdout }} shield.mcu.com
+          {{ new_ip_check.stdout }} hydra.mcu.com
+          {{ new_ip_check.stdout }} mcu.com
+          
+          ============================================

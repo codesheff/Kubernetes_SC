@@ -1,0 +1,191 @@
+---
+# ============================================
+# Configure Ingress Controller with MetalLB
+# ============================================
+# This playbook switches the ingress-nginx controller from NodePort 
+# to LoadBalancer type to use MetalLB for external IP assignment
+
+- name: Configure Ingress Controller to use MetalLB LoadBalancer
+  hosts: master
+  become: yes
+  gather_facts: yes
+  vars:
+    ingress_namespace: "ingress-nginx"
+    
+  tasks:
+    # ============================================
+    # Pre-checks and Status
+    # ============================================
+    
+    - name: Check MetalLB status
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        echo "=== MetalLB Pods ==="
+        kubectl get pods -n metallb-system
+        echo ""
+        echo "=== MetalLB IP Pool ==="
+        kubectl get ipaddresspool -n metallb-system -o wide
+        echo ""
+        echo "=== Current Ingress Service ==="
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o wide
+      register: metallb_status
+      changed_when: false
+
+    - name: Display MetalLB status
+      debug:
+        msg: |
+          Current MetalLB and Ingress Status:
+          {{ metallb_status.stdout }}
+
+    # ============================================
+    # Disable NGINX Reverse Proxy
+    # ============================================
+    
+    - name: Stop and disable nginx reverse proxy
+      systemd:
+        name: nginx
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: Display nginx stop result
+      debug:
+        msg: "✅ NGINX reverse proxy disabled (will use MetalLB LoadBalancer instead)"
+
+    # ============================================
+    # Switch Ingress to LoadBalancer
+    # ============================================
+
+    - name: Patch ingress-nginx controller service to LoadBalancer type
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl patch svc ingress-nginx-controller -n {{ ingress_namespace }} -p '{"spec":{"type":"LoadBalancer"}}'
+      register: patch_result
+      changed_when: "'patched' in patch_result.stdout"
+
+    - name: Display patch result
+      debug:
+        msg: "Service patch result: {{ patch_result.stdout }}"
+
+    # ============================================
+    # Wait for External IP Assignment
+    # ============================================
+
+    - name: Wait for MetalLB to assign external IP
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+      register: external_ip_check
+      until: external_ip_check.stdout != ""
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: Get final service status
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o wide
+      register: final_service_status
+      changed_when: false
+
+    - name: Get external IP details
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        EXTERNAL_IP=$(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        echo "External IP: $EXTERNAL_IP"
+        echo "HTTP URL: http://$EXTERNAL_IP"
+        echo "HTTPS URL: https://$EXTERNAL_IP"
+        echo ""
+        echo "Service Details:"
+        kubectl describe svc ingress-nginx-controller -n {{ ingress_namespace }}
+      register: ip_details
+      changed_when: false
+
+    # ============================================
+    # Test Connectivity
+    # ============================================
+
+    - name: Test external IP connectivity
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        EXTERNAL_IP=$(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        
+        echo "Testing connectivity to $EXTERNAL_IP..."
+        
+        # Test basic connectivity
+        if curl -s -m 5 "http://$EXTERNAL_IP" > /dev/null 2>&1; then
+          echo "✅ HTTP connectivity: SUCCESS"
+        else
+          echo "❌ HTTP connectivity: FAILED"
+        fi
+        
+        # Test with Host header for shield
+        if curl -s -m 5 -H "Host: shield.mcu.com" "http://$EXTERNAL_IP" | grep -q "S.H.I.E.L.D"; then
+          echo "✅ Shield routing: SUCCESS"
+        else
+          echo "❌ Shield routing: FAILED"
+        fi
+        
+        # Test with Host header for hydra
+        if curl -s -m 5 -H "Host: hydra.mcu.com" "http://$EXTERNAL_IP" | grep -q "Hydra"; then
+          echo "✅ Hydra routing: SUCCESS"
+        else
+          echo "❌ Hydra routing: FAILED"
+        fi
+      register: connectivity_test
+      changed_when: false
+
+    # ============================================
+    # Update DNS Configuration
+    # ============================================
+
+    - name: Get the assigned external IP
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+      register: assigned_ip
+      changed_when: false
+
+    - name: Display final configuration
+      debug:
+        msg: |
+          ============================================
+          METALLB LOADBALANCER SETUP COMPLETE!
+          ============================================
+          
+          ✅ Ingress Controller Service Details:
+          {{ final_service_status.stdout }}
+          
+          🌐 External IP Assignment:
+          {{ assigned_ip.stdout }}
+          
+          🔗 Connectivity Test Results:
+          {{ connectivity_test.stdout }}
+          
+          📋 DNS Configuration Needed:
+          Update your DNS or hosts file to point domains to: {{ assigned_ip.stdout }}
+          
+          # Add to /etc/hosts (Linux/Mac) or C:\Windows\System32\drivers\etc\hosts (Windows):
+          {{ assigned_ip.stdout }} shield.mcu.com
+          {{ assigned_ip.stdout }} hydra.mcu.com
+          {{ assigned_ip.stdout }} mcu.com
+          
+          🎯 Test URLs (after DNS update):
+          - http://shield.mcu.com/
+          - http://hydra.mcu.com/
+          - http://mcu.com/shield
+          - http://mcu.com/hydra
+          
+          🔧 Direct IP Testing:
+          - curl -H "Host: shield.mcu.com" http://{{ assigned_ip.stdout }}
+          - curl -H "Host: hydra.mcu.com" http://{{ assigned_ip.stdout }}
+          
+          ============================================
+          
+          ⚠️  Important Notes:
+          - NGINX reverse proxy has been disabled
+          - MetalLB LoadBalancer is now handling external access
+          - Standard ports 80/443 are now available on the external IP
+          - No more NodePort required!
+          
+          ============================================
