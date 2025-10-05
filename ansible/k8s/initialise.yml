@@ -1,8 +1,45 @@
 
+# ============================================================================
+# Kubernetes Cluster Initialization Playbook
+# ============================================================================
+# 
+# Purpose: Initialize a Kubernetes cluster on master nodes with safety checks
+#
+# Usage:
+#   Normal run (safe):     ansible-playbook -i inventory/all-server.ini k8s/initialise.yml
+#   Force reset (danger):  ansible-playbook -i inventory/all-server.ini k8s/initialise.yml -e force_reset=true
+#   Check mode:            ansible-playbook -i inventory/all-server.ini k8s/initialise.yml --check
+#
+# Features:
+#   - Idempotent: Safe to run multiple times
+#   - Automatic IP detection for API server
+#   - Conditional reset (only with explicit force_reset=true)
+#   - Downloads kubeconfig to local machine
+#   - Configures containerd with systemd cgroup driver
+#
+# Prerequisites:
+#   - Kubernetes packages installed (kubelet, kubeadm, kubectl)
+#   - containerd runtime installed and configured
+#   - Node meets kubeadm requirements
+#   - CNI plugins will be installed separately
+#
+# Outputs:
+#   - Kubernetes cluster initialized on master node
+#   - kubeconfig file downloaded to ../kubeconfig
+#   - User kubectl configuration in /home/cranie/.kube/config
+#
+# ============================================================================
+
 - name: Generating token on master node and token deployment to worker node
   hosts: masters
   become: yes
   tasks:
+    # ========================================================================
+    # Containerd Configuration and Restart
+    # ========================================================================
+    # Ensure containerd is properly configured with systemd cgroup driver
+    # This is required for Kubernetes to work correctly with containerd CRI
+    
     - name: Ensure containerd is stopped
       service:
         name: containerd
@@ -32,52 +69,301 @@
         name: kubelet
         state: restarted
 
+    # ========================================================================
+    # Cluster Initialization Safety Checks
+    # ========================================================================
+    # Check if cluster already exists to prevent accidental destruction
+    # Only perform destructive operations when explicitly requested
+    
     - name: Display detected IP address
       debug:
         msg: "Detected primary IP address: {{ ansible_default_ipv4.address }}"
 
-    - name: Reset Kubernetes cluster (clean slate)
+    - name: Check if Kubernetes is already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: k8s_initialized
+
+    - name: Display cluster status
+      debug:
+        msg: |
+          {% if k8s_initialized.stat.exists %}
+          ⚠️  Kubernetes cluster is already initialized!
+          Skipping destructive operations to preserve existing cluster.
+          {% else %}
+          🚀 Kubernetes cluster not found. Proceeding with initialization.
+          {% endif %}
+
+    # ========================================================================
+    # Conditional Cluster Reset (Only with force_reset=true)
+    # ========================================================================
+    # These tasks only run when force_reset=true is explicitly set
+    # WARNING: This will destroy all cluster data, pods, and configurations!
+    
+    - name: Reset Kubernetes cluster (only if forced)
       shell: kubeadm reset --force
+      when: 
+        - force_reset is defined
+        - force_reset | bool
+        - k8s_initialized.stat.exists
       ignore_errors: yes
 
-    - name: Remove Kubernetes configuration directories
+    - name: Remove Kubernetes configuration directories (only if resetting)
       file:
         path: "{{ item }}"
         state: absent
       loop:
-        - /etc/kubernetes
-        - /var/lib/kubelet
-        - /var/lib/etcd
-        - /opt/cni/bin
+        - /etc/kubernetes      # Cluster certificates and configuration
+        - /var/lib/kubelet     # Kubelet state and configuration
+        - /var/lib/etcd        # etcd database (all cluster data)
+        - /opt/cni/bin         # CNI plugin binaries
+      when: 
+        - force_reset is defined
+        - force_reset | bool
       ignore_errors: yes
 
-    - name: Remove CNI configuration
+    - name: Remove CNI configuration (only if resetting)
       file:
-        path: /etc/cni/net.d
+        path: /etc/cni/net.d   # CNI network configuration
         state: absent
+      when: 
+        - force_reset is defined
+        - force_reset | bool
       ignore_errors: yes
 
     - name: Restart containerd after reset
       service:
         name: containerd
         state: restarted
+      when: 
+        - force_reset is defined
+        - force_reset | bool
 
     - name: Restart kubelet after reset
       service:
         name: kubelet
         state: restarted
+      when: 
+        - force_reset is defined
+        - force_reset | bool
 
-    - name: Initialize Kubernetes Cluster
-    # Using ansible facts to get the primary IP address automatically
+    # ========================================================================
+    # Kubernetes Cluster Initialization
+    # ========================================================================
+    # Initialize new Kubernetes cluster only if not already initialized
+    # Uses detected IP address for API server endpoint
+    
+    - name: Initialize Kubernetes Cluster (only if not already initialized)
       shell: kubeadm init --pod-network-cidr=10.244.0.0/16  --ignore-preflight-errors=all --apiserver-advertise-address={{ ansible_default_ipv4.address }} --upload-certs
-      # --control-plane-endpoint {{ ansible_default_ipv4.address }}
-      # when: "'masters' in group_names"
+      when: not k8s_initialized.stat.exists
+      register: kubeadm_init_result
 
+    - name: Display initialization result
+      debug:
+        msg: |
+          {% if kubeadm_init_result.changed %}
+          ✅ Kubernetes cluster initialized successfully!
+          {% else %}
+          ℹ️  Kubernetes cluster was already initialized. No changes made.
+          {% endif %}
+
+    # ========================================================================
+    # Kubectl Configuration Setup
+    # ========================================================================
+    # Configure kubectl for the cranie user and download config to local machine
 
     - name: create .kube directory and copy kube config file
       shell: "{{ item }}"
       loop:
-        -  mkdir -p /home/cranie/.kube
-        -  cp -f /etc/kubernetes/admin.conf /home/cranie/.kube/config
-        -  chown -R cranie:cranie /home/cranie/.kube/
-      # when: "'masters' in group_names"
+        -  mkdir -p /home/cranie/.kube                                    # Create user kubectl directory
+        -  cp -f /etc/kubernetes/admin.conf /home/cranie/.kube/config     # Copy admin config for user
+        -  chown -R cranie:cranie /home/cranie/.kube/                     # Set proper ownership
+      when: k8s_initialized.stat.exists or kubeadm_init_result.changed
+
+    - name: Fetch kubeconfig to local machine
+      fetch:
+        src: /etc/kubernetes/admin.conf                                   # Source: cluster admin config
+        dest: "{{ playbook_dir }}/../kubeconfig"                          # Destination: local kubeconfig file
+        flat: yes
+      become: yes
+      when: k8s_initialized.stat.exists or kubeadm_init_result.changed
+
+    - name: Fetch Kubernetes CA certificate to local machine
+      fetch:
+        src: /etc/kubernetes/pki/ca.crt                                    # Source: cluster CA certificate
+        dest: "{{ playbook_dir }}/../ca.crt"                              # Destination: local CA cert file
+        flat: yes
+      become: yes
+      when: k8s_initialized.stat.exists or kubeadm_init_result.changed
+
+    - name: Create backup of original kubeconfig
+      copy:
+        src: "{{ playbook_dir }}/../kubeconfig"
+        dest: "{{ playbook_dir }}/../kubeconfig.backup"
+        force: yes
+      delegate_to: localhost
+      become: no                                                          # Don't use sudo on localhost
+      when: k8s_initialized.stat.exists or kubeadm_init_result.changed
+
+    - name: Fix kubeconfig server URL for external access
+      replace:
+        path: "{{ playbook_dir }}/../kubeconfig"
+        regexp: 'server: https://.*:6443'
+        replace: 'server: https://{{ ansible_default_ipv4.address }}:6443'
+      delegate_to: localhost
+      become: no                                                          # Don't use sudo on localhost
+      when: k8s_initialized.stat.exists or kubeadm_init_result.changed
+
+    - name: Update kubeconfig to use local CA certificate file
+      replace:
+        path: "{{ playbook_dir }}/../kubeconfig"
+        regexp: '(\s+)certificate-authority-data:.*'
+        replace: '\1certificate-authority: {{ playbook_dir }}/../ca.crt'
+      delegate_to: localhost
+      become: no                                                          # Don't use sudo on localhost
+      when: k8s_initialized.stat.exists or kubeadm_init_result.changed
+
+    - name: Create secure kubectl configuration script
+      copy:
+        dest: "{{ playbook_dir }}/../setup-kubectl.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Kubernetes kubectl setup script - Secure configuration
+          
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          KUBECONFIG_FILE="$SCRIPT_DIR/kubeconfig"
+          CA_CERT_FILE="$SCRIPT_DIR/ca.crt"
+          
+          echo "============================================"
+          echo "KUBERNETES KUBECTL SECURE SETUP"
+          echo "============================================"
+          
+          # Check if files exist
+          if [ ! -f "$KUBECONFIG_FILE" ]; then
+              echo "❌ Error: kubeconfig file not found at $KUBECONFIG_FILE"
+              exit 1
+          fi
+          
+          if [ ! -f "$CA_CERT_FILE" ]; then
+              echo "❌ Error: CA certificate file not found at $CA_CERT_FILE"
+              exit 1
+          fi
+          
+          # Create ~/.kube directory
+          mkdir -p ~/.kube
+          
+          # Copy kubeconfig to default location
+          cp "$KUBECONFIG_FILE" ~/.kube/config
+          echo "✅ Copied kubeconfig to ~/.kube/config"
+          
+          # Update the certificate path in the copied config
+          sed -i "s|certificate-authority: .*ca.crt|certificate-authority: $CA_CERT_FILE|g" ~/.kube/config
+          echo "✅ Updated CA certificate path in kubeconfig"
+          
+          # Set proper permissions
+          chmod 600 ~/.kube/config
+          echo "✅ Set secure permissions on kubeconfig"
+          
+          # Test connection
+          echo ""
+          echo "Testing secure connection to Kubernetes cluster..."
+          if kubectl cluster-info >/dev/null 2>&1; then
+              echo "✅ SUCCESS: Secure connection to Kubernetes cluster established!"
+              echo ""
+              echo "Cluster Information:"
+              kubectl cluster-info
+              echo ""
+              echo "Available nodes:"
+              kubectl get nodes
+          else
+              echo "❌ Failed to connect to Kubernetes cluster"
+              echo "Please check:"
+              echo "1. Network connectivity to {{ ansible_default_ipv4.address }}:6443"
+              echo "2. Firewall settings"
+              echo "3. Cluster status on master node"
+              exit 1
+          fi
+          
+          echo ""
+          echo "============================================"
+          echo "SETUP COMPLETE - SECURE AUTHENTICATION"
+          echo "============================================"
+          echo "You can now use kubectl commands securely:"
+          echo "  kubectl get nodes"
+          echo "  kubectl get pods --all-namespaces"
+          echo "  kubectl cluster-info"
+          echo "============================================"
+      delegate_to: localhost
+      become: no                                                          # Don't use sudo on localhost
+      when: k8s_initialized.stat.exists or kubeadm_init_result.changed
+
+    # ========================================================================
+    # User Instructions and Information
+    # ========================================================================
+    # Display helpful information for using kubectl with the cluster
+
+    - name: Display kubeconfig setup instructions
+      debug:
+        msg: |
+          ============================================
+          KUBECTL SECURE SETUP INSTRUCTIONS:
+          ============================================
+          
+          {% if k8s_initialized.stat.exists and not (force_reset is defined and force_reset | bool) %}
+          ℹ️  Using existing Kubernetes cluster configuration.
+          {% endif %}
+          
+          📁 FILES DOWNLOADED:
+          - Kubeconfig: {{ playbook_dir }}/../kubeconfig
+          - CA Certificate: {{ playbook_dir }}/../ca.crt
+          - Setup Script: {{ playbook_dir }}/../setup-kubectl.sh
+          - Backup: {{ playbook_dir }}/../kubeconfig.backup
+          
+          🔒 SECURE SETUP (RECOMMENDED):
+          Run the automated setup script:
+            cd {{ playbook_dir }}/..
+            ./setup-kubectl.sh
+          
+          📋 MANUAL SETUP (ALTERNATIVE):
+          1. Copy files to kubectl directory:
+             mkdir -p ~/.kube
+             cp {{ playbook_dir }}/../kubeconfig ~/.kube/config
+             chmod 600 ~/.kube/config
+          
+          2. Update CA certificate path in ~/.kube/config:
+             sed -i 's|certificate-authority: .*|certificate-authority: {{ playbook_dir }}/../ca.crt|g' ~/.kube/config
+          
+          3. Test the secure connection:
+             kubectl cluster-info
+             kubectl get nodes
+          
+          🌐 CLUSTER ACCESS:
+          - API Server: https://{{ ansible_default_ipv4.address }}:6443
+          - Authentication: TLS with proper certificate verification
+          - CA Certificate: Validated against cluster CA
+          
+          🔐 SECURITY FEATURES:
+          ✅ TLS certificate verification enabled
+          ✅ Cluster CA certificate validation
+          ✅ No insecure connections
+          ✅ Proper certificate chain validation
+          ✅ Production-ready security
+          
+          🔧 TROUBLESHOOTING:
+          If connection fails:
+          1. Check network: telnet {{ ansible_default_ipv4.address }} 6443
+          2. Verify files exist: ls -la {{ playbook_dir }}/../kubeconfig {{ playbook_dir }}/../ca.crt
+          3. Run setup script: {{ playbook_dir }}/../setup-kubectl.sh
+          4. Check cluster status on master: kubectl get nodes (on master node)
+          
+          Next Steps:
+          - Install a CNI plugin (Flannel, Calico, etc.)
+          - Join worker nodes to the cluster
+          - Deploy your applications
+          ============================================
+      when: k8s_initialized.stat.exists or kubeadm_init_result.changed
+
+# ============================================================================
+# End of Kubernetes Cluster Initialization Playbook
+# ============================================================================

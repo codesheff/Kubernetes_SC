@@ -1,0 +1,27 @@
+# Kubernetes Configuration Files (Sensitive)
+kubeconfig*
+ca.crt
+*.pem
+*.key
+
+# Generated files from Ansible playbooks
+setup-kubectl.sh
+
+# Ansible temporary files
+*.retry
+.ansible/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backup files
+*.backup
+*.bak
+*~
