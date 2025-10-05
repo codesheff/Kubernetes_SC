@@ -1,0 +1,227 @@
+---
+# ============================================
+# NGINX Ingress Controller Installation
+# ============================================
+# This playbook installs the NGINX Ingress Controller on a bare metal Kubernetes cluster.
+# It uses shell commands for reliability and includes proper error handling.
+# 
+# Prerequisites:
+# - Working Kubernetes cluster with kubectl access
+# - MetalLB installed for LoadBalancer service support
+# - Python kubernetes library (installed automatically)
+
+- name: Setup ingress-nginx controller on Kubernetes cluster
+  hosts: master
+  become: yes
+  gather_facts: yes
+  vars:
+    # Use bare metal manifest instead of cloud provider
+    ingress_manifest_url: "https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/baremetal/deploy.yaml"
+    ingress_namespace: "ingress-nginx"
+    
+  tasks:
+    # ============================================
+    # Prerequisites Installation
+    # ============================================
+    
+    - name: Install Python kubernetes library
+      pip:
+        name: 
+          - kubernetes
+          - PyYAML
+        state: present
+      ignore_errors: yes
+
+    - name: Install Python kubernetes library with apt (fallback)
+      apt:
+        name: 
+          - python3-kubernetes
+          - python3-yaml
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    # ============================================
+    # Ingress Controller Installation
+    # ============================================
+
+    # ============================================
+    # Environment Setup
+    # ============================================
+    
+    - name: Ensure kubectl uses correct kubeconfig
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl cluster-info
+      register: kubectl_test
+      changed_when: false
+
+    - name: Check if ingress-nginx namespace exists
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get namespace {{ ingress_namespace }}
+      register: namespace_check
+      failed_when: false
+      changed_when: false
+
+    - name: Display namespace status
+      debug:
+        msg: "Ingress-nginx namespace status: {{ 'EXISTS' if namespace_check.rc == 0 else 'NOT FOUND' }}"
+
+    - name: Download ingress-nginx manifest
+      get_url:
+        url: "{{ ingress_manifest_url }}"
+        dest: "/tmp/ingress-nginx-deploy.yaml"
+        mode: '0644'
+      register: manifest_download
+
+    - name: Apply ingress-nginx controller manifest
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl apply -f /tmp/ingress-nginx-deploy.yaml --validate=false
+      register: ingress_apply
+      changed_when: "'created' in ingress_apply.stdout or 'configured' in ingress_apply.stdout"
+
+    - name: Display manifest application result
+      debug:
+        msg: |
+          Ingress-nginx manifest application result:
+          {{ ingress_apply.stdout }}
+          {{ ingress_apply.stderr if ingress_apply.stderr else '' }}
+
+    # ============================================
+    # Wait for Deployment Readiness
+    # ============================================
+
+    - name: Wait for ingress-nginx namespace to be active
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get namespace {{ ingress_namespace }} -o jsonpath='{.status.phase}'
+      register: namespace_status
+      until: namespace_status.stdout == "Active"
+      retries: 30
+      delay: 2
+
+    - name: Wait for ingress-nginx controller deployment to exist
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get deployment ingress-nginx-controller -n {{ ingress_namespace }}
+      register: deployment_check
+      until: deployment_check.rc == 0
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: Wait for ingress-nginx controller to be ready
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl rollout status deployment/ingress-nginx-controller -n {{ ingress_namespace }} --timeout=600s
+      register: rollout_status
+      changed_when: false
+
+    - name: Display rollout status
+      debug:
+        msg: "Ingress controller rollout status: {{ rollout_status.stdout }}"
+
+    # ============================================
+    # Verification and Status
+    # ============================================
+
+    - name: Get ingress-nginx pods status
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get pods -n {{ ingress_namespace }} -l app.kubernetes.io/name=ingress-nginx
+      register: ingress_pods
+      changed_when: false
+
+    - name: Display ingress-nginx pods
+      debug:
+        msg: |
+          Ingress-nginx pods status:
+          {{ ingress_pods.stdout }}
+
+    - name: Get ingress-nginx service information
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o wide
+      register: ingress_service
+      changed_when: false
+
+    - name: Display ingress-nginx service
+      debug:
+        msg: |
+          Ingress-nginx service status:
+          {{ ingress_service.stdout }}
+
+    - name: Check service type and external IP
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        echo "Service Type: $(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.spec.type}')"
+        echo "External IP: $(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo 'Pending/Not Assigned')"
+        echo "Cluster IP: $(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.spec.clusterIP}')"
+        echo "Ports: $(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.spec.ports[*].port}' | tr ' ' ',')"
+      register: service_details
+      changed_when: false
+
+    - name: Display service details
+      debug:
+        msg: |
+          {{ service_details.stdout }}
+
+    # ============================================
+    # Configuration for Bare Metal
+    # ============================================
+
+    - name: Check if service is LoadBalancer type without external IP
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        SERVICE_TYPE=$(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.spec.type}')
+        EXTERNAL_IP=$(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+        if [ "$SERVICE_TYPE" = "LoadBalancer" ] && [ -z "$EXTERNAL_IP" ]; then
+          echo "NEEDS_EXTERNAL_IP"
+        else
+          echo "OK"
+        fi
+      register: service_ip_check
+      changed_when: false
+
+    - name: Display MetalLB requirement message
+      debug:
+        msg: |
+          ============================================
+          INGRESS CONTROLLER STATUS
+          ============================================
+          
+          ✅ Ingress-nginx controller installed successfully!
+          
+          📡 Service Configuration:
+          - The ingress controller is running as a LoadBalancer service
+          {% if service_ip_check.stdout == "NEEDS_EXTERNAL_IP" %}
+          - ⚠️  No external IP assigned yet
+          - This is normal for bare metal clusters
+          - MetalLB should assign an IP from your configured pool
+          {% else %}
+          - ✅ External IP assigned successfully
+          {% endif %}
+          
+          🔧 Next Steps:
+          1. Verify MetalLB is working: kubectl get svc -n metallb-system
+          2. Check IP pool: kubectl get ipaddresspool -n metallb-system
+          3. Test ingress: Create an Ingress resource for your applications
+          
+          📋 Quick Test Commands:
+          - kubectl get pods -n {{ ingress_namespace }}
+          - kubectl get svc -n {{ ingress_namespace }}
+          - kubectl logs -n {{ ingress_namespace }} -l app.kubernetes.io/name=ingress-nginx
+          
+          ============================================
+
+    # ============================================
+    # Cleanup
+    # ============================================
+
+    - name: Clean up downloaded manifest
+      file:
+        path: "/tmp/ingress-nginx-deploy.yaml"
+        state: absent
