@@ -1,0 +1,105 @@
+---
+# ============================================
+# Simple NGINX Reverse Proxy (HTTP Only)
+# ============================================
+
+- name: Setup Simple NGINX Reverse Proxy  
+  hosts: master
+  become: yes
+  gather_facts: yes
+  vars:
+    ingress_namespace: "ingress-nginx"
+    
+  tasks:
+    - name: Get NodePort details
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}'
+      register: http_nodeport
+      changed_when: false
+
+    - name: Create simple nginx configuration (HTTP only)
+      copy:
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              
+              server_name _;
+              
+              location / {
+                  proxy_pass http://127.0.0.1:{{ http_nodeport.stdout }};
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Host $host;
+              }
+              
+              location /nginx-health {
+                  access_log off;
+                  return 200 "nginx proxy healthy\n";
+                  add_header Content-Type text/plain;
+              }
+          }
+        dest: /etc/nginx/sites-available/ingress-proxy
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable the ingress proxy site
+      file:
+        src: /etc/nginx/sites-available/ingress-proxy
+        dest: /etc/nginx/sites-enabled/ingress-proxy
+        state: link
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Test nginx configuration
+      command: nginx -t
+      register: nginx_test
+      changed_when: false
+
+    - name: Restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+        enabled: yes
+
+    - name: Test the setup
+      shell: |
+        echo "NodePort: {{ http_nodeport.stdout }}"
+        echo ""
+        echo "Testing proxy health:"
+        curl -s http://127.0.0.1/nginx-health
+        echo ""
+        echo "Testing shield routing:"
+        curl -s -H "Host: shield.mcu.com" http://127.0.0.1 | head -1
+        echo ""
+        echo "Testing hydra routing:"
+        curl -s -H "Host: hydra.mcu.com" http://127.0.0.1 | head -1
+      register: test_results
+      changed_when: false
+
+    - name: Display results
+      debug:
+        msg: |
+          ============================================
+          NGINX PROXY SETUP COMPLETE!
+          ============================================
+          
+          {{ test_results.stdout }}
+          
+          🎯 Your ingress is now accessible on standard port 80:
+          - http://shield.mcu.com/
+          - http://hydra.mcu.com/  
+          - http://mcu.com/shield
+          - http://mcu.com/hydra
+          
+          📋 Add to your hosts file:
+          192.168.1.114 shield.mcu.com hydra.mcu.com mcu.com
+          
+          ============================================
