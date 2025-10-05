@@ -9,11 +9,22 @@
         name: python3-pip
         state: present
 
-    - name: Install Kubernetes Python client library with pip
+    - name: Install Kubernetes Python client library (system package)
+      package:
+        name: 
+          - python3-kubernetes
+        state: present
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Install Kubernetes Python client library with pip (if system package not available)
       pip:
         name: kubernetes
         executable: /usr/bin/pip3
         state: present
+        break_system_packages: yes
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
 
     # curl -skSL https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/v4.11.0/deploy/uninstall-driver.sh | bash -s v4.11.0 --
     # git clone https://github.com/kubernetes-csi/csi-driver-nfs.git
@@ -236,8 +247,18 @@
 
 
 
-    - name: Remove Kubernetes Python client library
+    - name: Remove Kubernetes Python client library (system package)
+      package:
+        name: python3-kubernetes
+        state: absent
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Remove Kubernetes Python client library (pip)
       pip:
         name: kubernetes
         executable: /usr/bin/pip3
         state: absent
+        break_system_packages: yes
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes

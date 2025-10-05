@@ -28,20 +28,6 @@
     #     chdir: /home/cranie
 
 
-    - name: Add toleration to MetalLB controller deployment
-      become: yes
-      become_user: cranie
-      environment:
-        KUBECONFIG: /home/cranie/.kube/config
-      shell: |
-        kubectl patch deployment controller -n metallb-system \
-          --type='json' \
-          -p='[{"op": "add", "path": "/spec/template/spec/tolerations", "value": [{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]}]'
-      args:
-        chdir: /home/cranie
-      register: metallb_toleration_patch
-      failed_when: metallb_toleration_patch.rc != 0
-
     - name: Wait for metallb-system namespace to exist
       become: yes
       become_user: cranie
@@ -53,16 +39,277 @@
       args:
         chdir: /home/cranie
 
-    - name: Configure MetalLB strictARP
+    - name: Wait for MetalLB deployments to exist
+      become: yes
+      become_user: cranie
+      shell: kubectl get deployment controller -n metallb-system
+      register: deployment_check
+      retries: 15
+      delay: 5
+      until: deployment_check.rc == 0
+      args:
+        chdir: /home/cranie
+
+    - name: Check node readiness and install CNI components
+      become: yes
+      become_user: cranie
+      shell: |
+        echo "=== Node Status ==="
+        kubectl get nodes -o wide
+        echo "=== Node Taints ==="
+        kubectl describe nodes | grep -A5 -B5 Taints
+        
+        echo "=== Checking CNI binaries ==="
+        ls -la /opt/cni/bin/ || echo "CNI bin directory not found"
+        
+        echo "=== CNI Pods Status ==="
+        kubectl get pods -n kube-system | grep -E "(flannel|calico|weave|cilium)" || echo "No CNI pods found"
+      args:
+        chdir: /home/cranie
+      register: node_cni_initial_check
+
+    - name: Display initial CNI status
+      debug:
+        msg: "{{ node_cni_initial_check.stdout }}"
+
+    - name: Install CNI plugins binaries
+      become: yes
+      shell: |
+        # Create CNI directories
+        mkdir -p /opt/cni/bin
+        mkdir -p /etc/cni/net.d
+        
+        # Detect architecture
+        ARCH=$(uname -m)
+        case $ARCH in
+          x86_64) ARCH="amd64" ;;
+          aarch64) ARCH="arm64" ;;
+          armv7l) ARCH="arm" ;;
+          *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        
+        echo "Detected architecture: $ARCH"
+        
+        # Remove any existing CNI binaries that might be wrong architecture
+        rm -f /opt/cni/bin/*
+        
+        # Download and install CNI plugins for correct architecture
+        CNI_VERSION="v1.3.0"
+        echo "Downloading CNI plugins ${CNI_VERSION} for ${ARCH}..."
+        curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-${ARCH}-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
+        
+        # Set proper permissions
+        chmod +x /opt/cni/bin/*
+        
+        echo "=== CNI binaries installed ==="
+        ls -la /opt/cni/bin/
+        
+        echo "=== Testing loopback binary ==="
+        file /opt/cni/bin/loopback
+        /opt/cni/bin/loopback --help 2>&1 | head -5 || echo "Loopback binary test failed"
+      register: cni_install_result
+
+    - name: Display CNI installation result
+      debug:
+        msg: "{{ cni_install_result.stdout }}"
+
+    - name: Install Flannel CNI if no CNI is present
+      become: yes
+      become_user: cranie
+      shell: |
+        # Check if CNI is installed
+        if ! kubectl get pods -n kube-system | grep -E "(flannel|calico|weave|cilium)" > /dev/null; then
+          echo "Installing Flannel CNI..."
+          kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+        else
+          echo "CNI already present"
+        fi
+      args:
+        chdir: /home/cranie
+      register: flannel_install
+
+    - name: Display Flannel installation result
+      debug:
+        msg: "{{ flannel_install.stdout }}"
+
+    - name: Restart containerd and kubelet after CNI installation
+      become: yes
+      service:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - containerd
+        - kubelet
+
+    - name: Wait for CNI pods to be ready
+      become: yes
+      become_user: cranie
+      shell: |
+        echo "Waiting for CNI pods to be ready..."
+        
+        # Check what Flannel pods actually exist
+        echo "=== All kube-system pods ==="
+        kubectl get pods -n kube-system
+        
+        echo "=== Flannel DaemonSet ==="
+        kubectl get ds -n kube-system | grep flannel || echo "No Flannel DaemonSet found"
+        
+        echo "=== Flannel pods with different selectors ==="
+        kubectl get pods -n kube-system -l app=flannel 2>/dev/null || echo "No pods with app=flannel"
+        kubectl get pods -n kube-system -l k8s-app=flannel 2>/dev/null || echo "No pods with k8s-app=flannel"
+        kubectl get pods -n kube-system | grep flannel || echo "No flannel pods found"
+        
+        # Try to wait for flannel pods if they exist
+        if kubectl get pods -n kube-system | grep flannel > /dev/null; then
+          echo "Found flannel pods, waiting for readiness..."
+          # Wait for flannel pods by name pattern
+          for pod in $(kubectl get pods -n kube-system | grep flannel | awk '{print $1}'); do
+            echo "Waiting for pod: $pod"
+            kubectl wait --namespace kube-system --for=condition=ready pod/$pod --timeout=60s || echo "Pod $pod not ready"
+          done
+        else
+          echo "No flannel pods found to wait for"
+        fi
+        
+        echo "=== Final CNI Status ==="
+        kubectl get pods -n kube-system | grep -E "(flannel|calico|weave|cilium)" || echo "No CNI pods found"
+      args:
+        chdir: /home/cranie
+      register: cni_pods_status
+      failed_when: false
+
+    - name: Display CNI pods status
+      debug:
+        msg: "{{ cni_pods_status.stdout }}"
+
+    - name: Check if we need to troubleshoot Flannel installation
+      become: yes
+      become_user: cranie
+      shell: |
+        echo "=== Troubleshooting Flannel ==="
+        
+        # Check if Flannel manifest was applied
+        kubectl get all -n kube-flannel || echo "No kube-flannel namespace"
+        kubectl get all -n kube-system | grep flannel || echo "No flannel resources in kube-system"
+        
+        # Check for any CNI-related errors
+        echo "=== Recent events ==="
+        kubectl get events -n kube-system --sort-by='.lastTimestamp' | tail -10
+        
+        # Try to reapply Flannel if needed
+        if ! kubectl get pods -n kube-system | grep flannel > /dev/null; then
+          echo "Reapplying Flannel manifest..."
+          kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+          sleep 30
+          kubectl get pods -n kube-system | grep flannel || echo "Still no flannel pods"
+        fi
+      args:
+        chdir: /home/cranie
+      register: flannel_troubleshoot
+      failed_when: false
+
+    - name: Display Flannel troubleshooting
+      debug:
+        msg: "{{ flannel_troubleshoot.stdout }}"
+
+    - name: Wait for node to become Ready (after CNI installation)
+      become: yes
+      become_user: cranie
+      shell: kubectl wait --for=condition=Ready nodes --all --timeout=300s
+      args:
+        chdir: /home/cranie
+      register: node_ready_wait
+      failed_when: false
+
+    - name: Remove node not-ready taint if still present
+      become: yes
+      become_user: cranie
+      shell: |
+        # Remove not-ready taint if it exists
+        kubectl taint nodes --all node.kubernetes.io/not-ready- || echo "Taint already removed or doesn't exist"
+        # Remove unreachable taint if it exists  
+        kubectl taint nodes --all node.kubernetes.io/unreachable- || echo "Taint already removed or doesn't exist"
+      args:
+        chdir: /home/cranie
+      when: node_ready_wait.rc != 0
+
+    - name: Debug MetalLB controller status before patching
+      become: yes
+      become_user: cranie
+      shell: |
+        echo "=== MetalLB Pods Status ==="
+        kubectl get pods -n metallb-system -o wide
+        echo "=== Controller Deployment Description ==="
+        kubectl describe deployment controller -n metallb-system
+        echo "=== Final Node Status ==="
+        kubectl get nodes -o wide
+        echo "=== Events ==="
+        kubectl get events -n metallb-system --sort-by='.lastTimestamp'
+      args:
+        chdir: /home/cranie
+      register: metallb_debug_before
+      failed_when: false
+
+    - name: Display debug information
+      debug:
+        msg: "{{ metallb_debug_before.stdout }}"
+
+    - name: Add tolerations to MetalLB controller deployment
       become: yes
       become_user: cranie
       environment:
         KUBECONFIG: /home/cranie/.kube/config
       shell: |
-        kubectl patch configmap kube-proxy -n kube-system --type merge -p '{"data":{"config.conf":"apiVersion: kubeproxy.config.k8s.io/v1alpha1\nkind: KubeProxyConfiguration\nmode: \"iptables\"\nstrictARP: true\n"}}'
+        kubectl patch deployment controller -n metallb-system \
+          --type='json' \
+          -p='[{
+            "op": "add", 
+            "path": "/spec/template/spec/tolerations", 
+            "value": [
+              {"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"},
+              {"key":"node.kubernetes.io/not-ready","operator":"Exists","effect":"NoExecute"},
+              {"key":"node.kubernetes.io/unreachable","operator":"Exists","effect":"NoExecute"}
+            ]
+          }]'
       args:
         chdir: /home/cranie
+      register: metallb_toleration_patch
+      failed_when: false
 
+    - name: Wait for MetalLB controller to be ready (with extended timeout)
+      become: yes
+      become_user: cranie
+      shell: |
+        kubectl wait --namespace metallb-system --for=condition=Available deployment/controller --timeout=300s
+      args:
+        chdir: /home/cranie
+      register: controller_wait
+      failed_when: false
+
+    - name: Debug MetalLB controller if still not ready
+      become: yes
+      become_user: cranie
+      shell: |
+        echo "=== Final MetalLB Pods Status ==="
+        kubectl get pods -n metallb-system -o wide
+        echo "=== Controller Logs ==="
+        kubectl logs deployment/controller -n metallb-system --tail=100 || echo "No logs available"
+        echo "=== Pod Descriptions ==="
+        kubectl describe pods -n metallb-system
+      args:
+        chdir: /home/cranie
+      register: metallb_debug_final
+      when: controller_wait.rc != 0
+
+    - name: Display final debug information
+      debug:
+        msg: "{{ metallb_debug_final.stdout }}"
+      when: controller_wait.rc != 0
+
+    - name: Fail if MetalLB controller is not ready
+      fail:
+        msg: "MetalLB controller failed to become ready. Check the debug output above."
+      when: controller_wait.rc != 0
 
     - name: Create MetalLB address pool config
       become: yes
@@ -88,28 +335,17 @@
             ipAddressPools:
             - {{ address_pool_name }}
       vars:
-        ip_address_pool: 192.168.0.75-192.168.0.100
+        ip_address_pool: 192.168.1.75-192.168.1.100
         address_pool_name: default
         advertisement_name: default
 
-    - name: Debug MetalLB controller and webhook pods if not ready
+    - name: Configure MetalLB strictARP
       become: yes
       become_user: cranie
+      environment:
+        KUBECONFIG: /home/cranie/.kube/config
       shell: |
-        kubectl get pods -n metallb-system
-        kubectl describe deployment controller -n metallb-system
-        kubectl logs deployment/controller -n metallb-system --tail=50
-      args:
-        chdir: /home/cranie
-      register: metallb_debug
-      failed_when: false
-
-    - name: Wait for MetalLB controller and webhook to be ready
-      become: yes
-      become_user: cranie
-      shell: |
-        kubectl wait --namespace metallb-system --for=condition=Available deployment/controller --timeout=120s
-    #     kubectl wait --namespace metallb-system --for=condition=Available deployment/webhook --timeout=120s
+        kubectl patch configmap kube-proxy -n kube-system --type merge -p '{"data":{"config.conf":"apiVersion: kubeproxy.config.k8s.io/v1alpha1\nkind: KubeProxyConfiguration\nmode: \"iptables\"\nstrictARP: true\n"}}'
       args:
         chdir: /home/cranie
 

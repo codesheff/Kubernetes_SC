@@ -3,10 +3,74 @@
   hosts: masters
   become: yes
   tasks:
+    - name: Ensure containerd is stopped
+      service:
+        name: containerd
+        state: stopped
+
+    - name: Remove existing containerd config
+      file:
+        path: /etc/containerd/config.toml
+        state: absent
+
+    - name: Generate default containerd config
+      shell: |
+        containerd config default > /etc/containerd/config.toml
+
+    - name: Configure containerd to use systemd cgroup driver
+      shell: |
+        sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+
+    - name: Start and enable containerd
+      service:
+        name: containerd
+        state: started
+        enabled: yes
+
+    - name: Restart kubelet
+      service:
+        name: kubelet
+        state: restarted
+
+    - name: Display detected IP address
+      debug:
+        msg: "Detected primary IP address: {{ ansible_default_ipv4.address }}"
+
+    - name: Reset Kubernetes cluster (clean slate)
+      shell: kubeadm reset --force
+      ignore_errors: yes
+
+    - name: Remove Kubernetes configuration directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes
+        - /var/lib/kubelet
+        - /var/lib/etcd
+        - /opt/cni/bin
+      ignore_errors: yes
+
+    - name: Remove CNI configuration
+      file:
+        path: /etc/cni/net.d
+        state: absent
+      ignore_errors: yes
+
+    - name: Restart containerd after reset
+      service:
+        name: containerd
+        state: restarted
+
+    - name: Restart kubelet after reset
+      service:
+        name: kubelet
+        state: restarted
+
     - name: Initialize Kubernetes Cluster
-    # --apiserver-advertise-address=192.168.0.70
-      shell: kubeadm init --pod-network-cidr=10.244.0.0/16  --ignore-preflight-errors=all --apiserver-advertise-address=192.168.0.70 --upload-certs
-      # --control-plane-endpoint 192.168.0.70
+    # Using ansible facts to get the primary IP address automatically
+      shell: kubeadm init --pod-network-cidr=10.244.0.0/16  --ignore-preflight-errors=all --apiserver-advertise-address={{ ansible_default_ipv4.address }} --upload-certs
+      # --control-plane-endpoint {{ ansible_default_ipv4.address }}
       # when: "'masters' in group_names"
 
 
