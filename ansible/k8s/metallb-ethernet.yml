@@ -1,0 +1,263 @@
+---
+# ============================================
+# Configure MetalLB for Ethernet Environment
+# ============================================
+# Now that Ethernet is the primary interface, we can use 
+# MetalLB Layer 2 mode properly
+
+- name: Configure MetalLB for Ethernet Environment
+  hosts: master
+  become: yes
+  gather_facts: yes
+  vars:
+    metallb_namespace: "metallb-system"
+    ingress_namespace: "ingress-nginx"
+    
+  tasks:
+    # ============================================
+    # Verify Ethernet Priority
+    # ============================================
+    
+    - name: Verify Ethernet is primary interface
+      shell: |
+        echo "=== Current Network Status ==="
+        ETH_IP=$(ip addr show eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+        WIFI_IP=$(ip addr show wlan0 | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+        
+        echo "Ethernet IP: $ETH_IP"
+        echo "WiFi IP: $WIFI_IP"
+        echo ""
+        
+        echo "=== Default Route ==="
+        DEFAULT_INTERFACE=$(ip route show default | head -1 | awk '{print $5}')
+        echo "Default route interface: $DEFAULT_INTERFACE"
+        
+        if [ "$DEFAULT_INTERFACE" = "eth0" ]; then
+          echo "✅ Ethernet is primary interface"
+        else
+          echo "❌ Ethernet is not primary interface"
+        fi
+      register: network_status
+      changed_when: false
+
+    - name: Display network status
+      debug:
+        msg: |
+          Network Status:
+          {{ network_status.stdout }}
+
+    # ============================================
+    # Stop NGINX Proxy (we'll use MetalLB instead)
+    # ============================================
+    
+    - name: Stop NGINX reverse proxy
+      systemd:
+        name: nginx
+        state: stopped
+        enabled: no
+
+    - name: Display NGINX stop message
+      debug:
+        msg: "✅ NGINX reverse proxy stopped (will use MetalLB LoadBalancer instead)"
+
+    # ============================================
+    # Update MetalLB Configuration for Ethernet
+    # ============================================
+
+    - name: Update MetalLB L2Advertisement for Ethernet
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        cat <<EOF | kubectl apply -f -
+        apiVersion: metallb.io/v1beta1
+        kind: L2Advertisement
+        metadata:
+          name: default
+          namespace: {{ metallb_namespace }}
+        spec:
+          ipAddressPools:
+          - default
+          interfaces:
+          - eth0
+        EOF
+      register: l2_config
+      changed_when: "'configured' in l2_config.stdout or 'created' in l2_config.stdout"
+
+    - name: Display L2Advertisement update
+      debug:
+        msg: "L2Advertisement update: {{ l2_config.stdout }}"
+
+    # ============================================
+    # Update MetalLB IP Pool (if needed)
+    # ============================================
+
+    - name: Get current Ethernet subnet
+      shell: ip route show dev eth0 | grep "scope link" | awk '{print $1}' | head -1
+      register: eth_subnet
+      changed_when: false
+
+    - name: Display current IP pool and subnet
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        echo "Current MetalLB IP Pool:"
+        kubectl get ipaddresspool -n {{ metallb_namespace }} -o wide
+        echo ""
+        echo "Ethernet subnet: {{ eth_subnet.stdout }}"
+      register: ip_pool_info
+      changed_when: false
+
+    - name: Display IP pool information
+      debug:
+        msg: |
+          IP Pool Information:
+          {{ ip_pool_info.stdout }}
+
+    # ============================================
+    # Restart MetalLB Components
+    # ============================================
+
+    - name: Restart MetalLB speaker for Ethernet interface
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl rollout restart daemonset/speaker -n {{ metallb_namespace }}
+      changed_when: true
+
+    - name: Wait for MetalLB speaker to be ready
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl rollout status daemonset/speaker -n {{ metallb_namespace }} --timeout=120s
+      register: speaker_status
+      changed_when: false
+
+    - name: Display speaker restart result
+      debug:
+        msg: "MetalLB speaker restart: {{ speaker_status.stdout }}"
+
+    # ============================================
+    # Configure Ingress for LoadBalancer
+    # ============================================
+
+    - name: Switch ingress service to LoadBalancer type
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl patch svc ingress-nginx-controller -n {{ ingress_namespace }} -p '{"spec":{"type":"LoadBalancer"}}'
+      register: service_patch
+      changed_when: "'patched' in service_patch.stdout"
+
+    - name: Wait for MetalLB to assign external IP
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+      register: external_ip_check
+      until: external_ip_check.stdout != ""
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    # ============================================
+    # Test MetalLB LoadBalancer
+    # ============================================
+
+    - name: Get final service details
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o wide
+      register: final_service
+      changed_when: false
+
+    - name: Test MetalLB external IP connectivity
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        EXTERNAL_IP=$(kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        
+        echo "Testing MetalLB external IP: $EXTERNAL_IP"
+        echo ""
+        
+        # Test ping to external IP
+        if ping -c 2 -W 3 "$EXTERNAL_IP" >/dev/null 2>&1; then
+          echo "✅ Ping to $EXTERNAL_IP: SUCCESS"
+        else
+          echo "❌ Ping to $EXTERNAL_IP: FAILED"
+        fi
+        
+        # Test HTTP connectivity
+        if curl -s -m 5 "http://$EXTERNAL_IP" >/dev/null 2>&1; then
+          echo "✅ HTTP connectivity: SUCCESS"
+        else
+          echo "❌ HTTP connectivity: FAILED"
+        fi
+        
+        # Test ingress routing
+        if curl -s -m 5 -H "Host: shield.mcu.com" "http://$EXTERNAL_IP" | grep -q "S.H.I.E.L.D"; then
+          echo "✅ Shield ingress routing: SUCCESS"
+        else
+          echo "❌ Shield ingress routing: FAILED"
+        fi
+        
+        if curl -s -m 5 -H "Host: hydra.mcu.com" "http://$EXTERNAL_IP" | grep -q "Hydra"; then
+          echo "✅ Hydra ingress routing: SUCCESS"
+        else
+          echo "❌ Hydra ingress routing: FAILED"
+        fi
+        
+        # Show ARP table entry
+        echo ""
+        echo "ARP table entry for $EXTERNAL_IP:"
+        arp -n | grep "$EXTERNAL_IP" || echo "No ARP entry found (may be normal)"
+      register: connectivity_test
+      changed_when: false
+
+    # ============================================
+    # Final Configuration Summary
+    # ============================================
+
+    - name: Get external IP for summary
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get svc ingress-nginx-controller -n {{ ingress_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+      register: final_external_ip
+      changed_when: false
+
+    - name: Display final configuration
+      debug:
+        msg: |
+          ============================================
+          METALLB ETHERNET CONFIGURATION COMPLETE!
+          ============================================
+          
+          🌐 Network Status:
+          {{ network_status.stdout }}
+          
+          📡 Service Status:
+          {{ final_service.stdout }}
+          
+          🧪 Connectivity Tests:
+          {{ connectivity_test.stdout }}
+          
+          🎯 MetalLB External IP: {{ final_external_ip.stdout }}
+          
+          📋 Update Your Hosts File:
+          # Add to /etc/hosts (Linux/Mac) or C:\Windows\System32\drivers\etc\hosts (Windows)
+          {{ final_external_ip.stdout }} shield.mcu.com
+          {{ final_external_ip.stdout }} hydra.mcu.com
+          {{ final_external_ip.stdout }} mcu.com
+          
+          🌟 Access URLs (Standard Ports!):
+          - http://shield.mcu.com/
+          - http://hydra.mcu.com/
+          - http://mcu.com/shield
+          - http://mcu.com/hydra
+          
+          🔧 Direct IP Testing:
+          - curl -H "Host: shield.mcu.com" http://{{ final_external_ip.stdout }}
+          - curl -H "Host: hydra.mcu.com" http://{{ final_external_ip.stdout }}
+          
+          ============================================
+          
+          ✅ Benefits of Ethernet + MetalLB:
+          - Real LoadBalancer service (no NodePort needed)
+          - Standard HTTP/HTTPS ports (80/443)
+          - No reverse proxy overhead
+          - True Layer 2 networking
+          - Production-ready setup
+          
+          ============================================

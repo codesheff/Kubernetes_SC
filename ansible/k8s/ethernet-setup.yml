@@ -1,0 +1,284 @@
+---
+# ============================================
+# Configure Raspberry Pi for Ethernet
+# ============================================
+# This playbook configures the Raspberry Pi to use Ethernet
+# instead of WiFi and sets up proper network priority
+
+- name: Configure Raspberry Pi for Ethernet Connection
+  hosts: master
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    # ============================================
+    # Check Current Network Status
+    # ============================================
+    
+    - name: Check current network interfaces
+      shell: |
+        echo "=== Current Network Interfaces ==="
+        ip addr show
+        echo ""
+        echo "=== Current Routes ==="
+        ip route show
+        echo ""
+        echo "=== Network Manager Status ==="
+        systemctl is-active NetworkManager 2>/dev/null || echo "NetworkManager not active"
+        echo ""
+        echo "=== Netplan Status ==="
+        ls -la /etc/netplan/ 2>/dev/null || echo "No netplan files"
+      register: current_network
+      changed_when: false
+
+    - name: Display current network status
+      debug:
+        msg: |
+          Current Network Configuration:
+          {{ current_network.stdout }}
+
+    # ============================================
+    # Physical Interface Check
+    # ============================================
+    
+    - name: Check if Ethernet cable is connected
+      shell: |
+        # Check if eth0 exists and get link status
+        if [ -d /sys/class/net/eth0 ]; then
+          echo "eth0 interface exists"
+          cat /sys/class/net/eth0/carrier 2>/dev/null && echo "Ethernet cable connected" || echo "No Ethernet cable detected"
+          cat /sys/class/net/eth0/operstate 2>/dev/null || echo "Cannot read eth0 state"
+        else
+          echo "eth0 interface not found"
+        fi
+        
+        # Check available interfaces
+        echo ""
+        echo "Available network interfaces:"
+        ls /sys/class/net/
+      register: ethernet_check
+      changed_when: false
+
+    - name: Display Ethernet status
+      debug:
+        msg: |
+          Ethernet Connection Check:
+          {{ ethernet_check.stdout }}
+
+    # ============================================
+    # Configure Netplan for Ethernet Priority
+    # ============================================
+    
+    - name: Check if Netplan is used
+      stat:
+        path: /etc/netplan
+      register: netplan_exists
+
+    - name: Create Netplan configuration for Ethernet priority
+      copy:
+        content: |
+          network:
+            version: 2
+            renderer: networkd
+            ethernets:
+              eth0:
+                dhcp4: true
+                dhcp4-overrides:
+                  route-metric: 100
+                optional: true
+            wifis:
+              wlan0:
+                dhcp4: true
+                dhcp4-overrides:
+                  route-metric: 200
+                optional: true
+                access-points:
+                  # Keep existing WiFi as backup
+                  # This will be filled in later if needed
+        dest: /etc/netplan/01-ethernet-priority.yaml
+        owner: root
+        group: root
+        mode: '0644'
+      when: netplan_exists.stat.exists
+      register: netplan_config
+
+    # ============================================
+    # Alternative: Configure dhcpcd for Ethernet Priority
+    # ============================================
+    
+    - name: Check if dhcpcd is used
+      stat:
+        path: /etc/dhcpcd.conf
+      register: dhcpcd_exists
+
+    - name: Configure dhcpcd for Ethernet priority
+      blockinfile:
+        path: /etc/dhcpcd.conf
+        block: |
+          # Ethernet priority configuration
+          interface eth0
+          metric 100
+          
+          interface wlan0
+          metric 200
+        marker: "# {mark} ANSIBLE MANAGED ETHERNET PRIORITY"
+        create: yes
+      when: dhcpcd_exists.stat.exists
+      register: dhcpcd_config
+
+    # ============================================
+    # Apply Network Configuration
+    # ============================================
+    
+    - name: Apply Netplan configuration
+      shell: |
+        netplan generate
+        netplan apply
+      when: netplan_exists.stat.exists and netplan_config.changed
+      register: netplan_apply
+      ignore_errors: yes
+
+    - name: Restart networking services
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - systemd-networkd
+        - dhcpcd
+      ignore_errors: yes
+      when: netplan_config.changed or dhcpcd_config.changed
+
+    # ============================================
+    # Bring up Ethernet Interface
+    # ============================================
+    
+    - name: Bring up Ethernet interface
+      shell: |
+        ip link set eth0 up
+        dhclient eth0 -v
+      register: ethernet_up
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Wait for Ethernet to get IP
+      shell: ip addr show eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
+      register: eth0_ip
+      until: eth0_ip.stdout != ""
+      retries: 10
+      delay: 3
+      ignore_errors: yes
+      changed_when: false
+
+    # ============================================
+    # Network Priority Verification
+    # ============================================
+    
+    - name: Check final network configuration
+      shell: |
+        echo "=== Final Network Status ==="
+        ip addr show eth0 2>/dev/null || echo "eth0 not available"
+        echo ""
+        ip addr show wlan0 2>/dev/null || echo "wlan0 not available"
+        echo ""
+        echo "=== Routing Table ==="
+        ip route show
+        echo ""
+        echo "=== Default Route ==="
+        ip route show default
+        echo ""
+        echo "=== Test Connectivity ==="
+        ping -c 2 8.8.8.8 2>/dev/null && echo "Internet connectivity: OK" || echo "Internet connectivity: FAILED"
+      register: final_network
+      changed_when: false
+
+    - name: Display final network status
+      debug:
+        msg: |
+          ============================================
+          ETHERNET CONFIGURATION COMPLETE
+          ============================================
+          
+          {{ final_network.stdout }}
+          
+          📋 Next Steps:
+          1. Verify Ethernet cable is connected
+          2. Check if eth0 has an IP address
+          3. Confirm Ethernet is the default route
+          4. Test MetalLB Layer 2 mode
+          
+          🔧 Manual Commands (if needed):
+          # Check interface status:
+          ip addr show eth0
+          
+          # Manually bring up Ethernet:
+          sudo ip link set eth0 up
+          sudo dhclient eth0
+          
+          # Check routing priority:
+          ip route show default
+          
+          # Test connectivity:
+          ping -c 3 google.com
+          
+          ============================================
+
+    # ============================================
+    # Provide Troubleshooting Information
+    # ============================================
+    
+    - name: Create network troubleshooting script
+      copy:
+        content: |
+          #!/bin/bash
+          
+          echo "=== Raspberry Pi Network Troubleshooting ==="
+          echo ""
+          
+          echo "1. Physical Connection Check:"
+          if [ -f /sys/class/net/eth0/carrier ]; then
+            if [ "$(cat /sys/class/net/eth0/carrier)" = "1" ]; then
+              echo "✅ Ethernet cable is connected"
+            else
+              echo "❌ No Ethernet cable detected"
+            fi
+          else
+            echo "❌ eth0 interface not found"
+          fi
+          
+          echo ""
+          echo "2. Interface Status:"
+          ip addr show eth0 2>/dev/null || echo "❌ eth0 not available"
+          echo ""
+          ip addr show wlan0 2>/dev/null || echo "❌ wlan0 not available"
+          
+          echo ""
+          echo "3. Routing Priority:"
+          echo "Default routes (lower metric = higher priority):"
+          ip route show default
+          
+          echo ""
+          echo "4. Connectivity Test:"
+          if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+            echo "✅ Internet connectivity working"
+          else
+            echo "❌ No internet connectivity"
+          fi
+          
+          echo ""
+          echo "5. DHCP Status:"
+          echo "Active DHCP leases:"
+          cat /var/lib/dhcp/dhclient.leases 2>/dev/null | grep "interface\|fixed-address" | tail -4 || echo "No DHCP lease info"
+          
+          echo ""
+          echo "=== Fixes ==="
+          echo "If Ethernet not working:"
+          echo "sudo ip link set eth0 up"
+          echo "sudo dhclient eth0"
+          echo ""
+          echo "If WiFi has priority:"
+          echo "sudo ip route del default via [wifi-gateway]"
+          echo "sudo dhclient eth0"
+        dest: /home/{{ ansible_user }}/network-troubleshoot.sh
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'

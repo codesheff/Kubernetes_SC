@@ -1,0 +1,67 @@
+---
+# ============================================
+# NGINX Reverse Proxy Setup for MetalLB
+# ============================================
+# This playbook sets up nginx on the master node to proxy
+# HTTP traffic from port 80 to the MetalLB LoadBalancer
+
+- name: Setup NGINX reverse proxy for MetalLB LoadBalancer
+  hosts: master
+  become: yes
+  gather_facts: yes
+  vars:
+    metallb_ip: 192.168.1.75
+    
+  tasks:
+    - name: Create nginx configuration for MetalLB proxy
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name shield.mcu.com hydra.mcu.com mcu.com *.mcu.com;
+              
+              # Proxy all requests to MetalLB LoadBalancer
+              location / {
+                  proxy_pass http://{{ metallb_ip }};
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Host $host;
+              }
+          }
+        dest: /etc/nginx/sites-available/ingress-proxy
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Test nginx configuration
+      command: nginx -t
+      register: nginx_test
+      changed_when: false
+
+    - name: Display nginx test result
+      debug:
+        msg: "Nginx configuration test: {{ nginx_test.stdout }}"
+
+    - name: Restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+
+    - name: Display success message
+      debug:
+        msg: |
+          ============================================
+          NGINX REVERSE PROXY → MetalLB SETUP COMPLETE!
+          ============================================
+          
+          🌐 You can now access these URLs on master node:
+          - http://192.168.1.112/ (with Host headers)
+          
+          🔧 Configuration Details:
+          - Nginx proxies requests from port 80 to MetalLB {{ metallb_ip }}
+          - Supports all *.mcu.com subdomains
+          - Preserves original Host headers for ingress routing
+          
+          ============================================
