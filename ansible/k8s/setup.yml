@@ -273,22 +273,54 @@
         path: /lib/systemd/system/kubelet.service
       register: kubelet_service_file
 
+    - name: Debug kubelet service file status
+      debug:
+        msg: "Kubelet service file exists: {{ kubelet_service_file.stat.exists }}"
+
     - name: Reinstall kubelet if service file is missing (Ubuntu/Debian)
       package:
         name: kubelet
         state: present
         force: yes
       when: ansible_os_family == "Debian" and not kubelet_service_file.stat.exists
+      register: kubelet_reinstalled
 
     - name: Reload systemd daemon again after potential reinstall
       systemd:
         daemon_reload: yes
-      when: not kubelet_service_file.stat.exists
+      when: kubelet_reinstalled is changed
+
+    - name: Verify kubelet service file exists after potential reinstall
+      stat:
+        path: /lib/systemd/system/kubelet.service
+      register: kubelet_service_final
+      when: kubelet_reinstalled is changed
+
+    - name: Fail if kubelet service file still missing after reinstall
+      fail:
+        msg: "Kubelet service file is still missing after reinstall. Manual intervention required."
+      when: kubelet_reinstalled is changed and not kubelet_service_final.stat.exists
 
     - name: Enable kubelet service (it will fail to start until kubeadm init)
       service:
         name: kubelet
         enabled: yes
+      register: kubelet_enable_result
+
+    - name: Verify kubelet service is enabled
+      command: systemctl is-enabled kubelet
+      register: kubelet_enabled_check
+      ignore_errors: yes
+
+    - name: Debug kubelet enable status
+      debug:
+        msg: 
+          - "Kubelet enable result: {{ kubelet_enable_result }}"
+          - "Kubelet enabled check: {{ kubelet_enabled_check.stdout if kubelet_enabled_check.rc == 0 else 'Failed to check' }}"
+
+    - name: Force enable kubelet if previous attempt failed
+      command: systemctl enable kubelet
+      when: kubelet_enabled_check.rc != 0 or kubelet_enabled_check.stdout != "enabled"
       ignore_errors: yes
 
     - name: Install kubectl (RHEL/CentOS)
