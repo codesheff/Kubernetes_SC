@@ -42,6 +42,16 @@
       when: ansible_machine == "aarch64" or ansible_machine == "armv7l"
       register: boot_config_changed
 
+    - name: Enable memory cgroup in current boot config (Raspberry Pi)
+      lineinfile:
+        path: /boot/firmware/current/cmdline.txt
+        regexp: '^((?!.*cgroup_enable=memory).*)'
+        line: '\1 cgroup_enable=memory cgroup_memory=1'
+        backrefs: yes
+      when: ansible_machine == "aarch64" or ansible_machine == "armv7l"
+      register: current_boot_config_changed
+      ignore_errors: yes
+
     - name: Enable memory cgroup in boot config (x86_64)
       lineinfile:
         path: /etc/default/grub
@@ -59,7 +69,7 @@
       reboot:
         reboot_timeout: 300
         test_command: systemctl is-system-running --wait
-      when: boot_config_changed.changed or (grub_updated is defined and grub_updated.changed)
+      when: boot_config_changed.changed or (grub_updated is defined and grub_updated.changed) or (current_boot_config_changed is defined and current_boot_config_changed.changed)
 
     - name: Configure containerd for systemd cgroup driver
       shell: |
@@ -73,11 +83,16 @@
         state: restarted
         enabled: yes
 
-    - name: Restart kubelet service
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and restart kubelet service (ignore errors as it may fail until cluster init)
       systemd:
         name: kubelet
         state: restarted
         enabled: yes
+      ignore_errors: yes
 
     - name: Set control IP from inventory or auto-detect
       set_fact:
