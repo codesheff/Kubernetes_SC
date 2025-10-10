@@ -1,16 +1,24 @@
 
 
-- name: Initialize master and worker nodes as root
+- name: Initialize control and worker nodes as root
   hosts: all
   become: yes
   gather_facts: yes
   tasks:
 
-    - name: disable firewalld for labs
+    - name: Disable firewalld for labs (RHEL/CentOS)
       service:
         name: firewalld
         state: stopped
         enabled: false
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
+    - name: Disable ufw firewall for labs (Ubuntu/Debian)
+      ufw:
+        state: disabled
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
 
     - name: Disable SWAP
       shell: |
@@ -23,18 +31,61 @@
         line: '#\0'
         backrefs: yes
 
-    - name: ensure net.bridge.bridge-nf-call-ip6tables is set to 1
+    - name: Ensure br_netfilter module is loaded
+      modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: Ensure br_netfilter module loads on boot
+      lineinfile:
+        path: /etc/modules-load.d/k8s.conf
+        line: br_netfilter
+        create: yes
+
+    - name: ensure net.bridge.bridge-nf-call-iptables is set to 1
       sysctl:
         name: net.bridge.bridge-nf-call-iptables
         value: '1'
         state: present
+        reload: yes
+
+    - name: ensure net.bridge.bridge-nf-call-ip6tables is set to 1
+      sysctl:
+        name: net.bridge.bridge-nf-call-ip6tables
+        value: '1'
+        state: present
+        reload: yes
+
+    - name: ensure net.ipv4.ip_forward is set to 1
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        reload: yes
 
 
-    - name: Installation of yum-utils
+    - name: Installation of yum-utils (RHEL/CentOS)
       yum:
         name: yum-utils
         state: present
         update_cache: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Update apt package cache (Ubuntu/Debian)
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install required packages (Ubuntu/Debian)
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+      when: ansible_os_family == "Debian"
 
 
 
@@ -46,6 +97,29 @@
         gpgcheck: yes
         gpgkey: https://download.docker.com/linux/centos/gpg
         enabled: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Create keyrings directory (Ubuntu/Debian)
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker GPG key (Ubuntu/Debian)
+      shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker repository (Ubuntu/Debian)
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+      when: ansible_os_family == "Debian"
 
     - name: Installation of Docker on RHEL/CentOS
       yum:
@@ -55,6 +129,17 @@
           - containerd.io
         state: present
         update_cache: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Installation of Docker on Ubuntu/Debian
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
 
 
     - name: Setting value of SystemdCgroup
@@ -92,16 +177,56 @@
         EOF
       args:
         creates: /etc/yum.repos.d/kubernetes.repo
+      when: ansible_os_family == "RedHat"
+
+    - name: Add Kubernetes GPG key (Ubuntu/Debian)
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        chmod a+r /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      when: ansible_os_family == "Debian"
+
+    - name: Add Kubernetes repository (Ubuntu/Debian)
+      shell: |
+        echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+      args:
+        creates: /etc/apt/sources.list.d/kubernetes.list
+      when: ansible_os_family == "Debian"
+
+    - name: Update apt cache after adding repositories (Ubuntu/Debian)
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
     #         exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 
 
-    - name: Install kubelet and kubeadm
+    - name: Install kubelet and kubeadm (RHEL/CentOS)
       yum:
         name:
           - kubelet
           - kubeadm
         state: present
         update_cache: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Install kubelet and kubeadm (Ubuntu/Debian)
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Hold kubelet and kubeadm packages (Ubuntu/Debian)
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+      when: ansible_os_family == "Debian"
 
 
 
@@ -114,8 +239,20 @@
         enabled: yes
         state: started
 
-    - name: Install kubectl
+    - name: Install kubectl (RHEL/CentOS)
       yum:
         name: kubectl
         state: present
-      when: "'masters' in group_names"
+      when: "'masters' in group_names and ansible_os_family == 'RedHat'"
+
+    - name: Install kubectl (Ubuntu/Debian)
+      apt:
+        name: kubectl
+        state: present
+      when: "'masters' in group_names and ansible_os_family == 'Debian'"
+
+    - name: Hold kubectl package (Ubuntu/Debian)
+      dpkg_selections:
+        name: kubectl
+        selection: hold
+      when: "'masters' in group_names and ansible_os_family == 'Debian'"
