@@ -1,0 +1,30 @@
+---
+- name: Playbook to install the necessary things to run k8s on Raspberry PIs
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Update repositories cache and upgrade system
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+        autoclean: yes
+        autoremove: yes
+    
+    - name: Check if a reboot is needed
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+
+    - name: Reboot if needed
+      ansible.builtin.reboot:
+        msg: "Reboot initiated by Ansible for kernel updates"
+        connect_timeout: 5
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: uptime
+      when: reboot_required_file.stat.exists
+
+
