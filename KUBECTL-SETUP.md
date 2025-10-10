@@ -2,9 +2,9 @@
 
 This directory contains a script for setting up kubectl on your local machine to access the Kubernetes cluster.
 
-## Setup Script 🚀
+## Setup Scripts 🚀
 
-**File:** `setup-local-kubectl.sh`
+### Linux/macOS/WSL: `setup-local-kubectl.sh`
 
 **Advantages:**
 - ✅ No dependencies (works without Ansible)
@@ -19,6 +19,33 @@ This directory contains a script for setting up kubectl on your local machine to
 cd /mnt/c/git/SC_Kubernetes
 ./setup-local-kubectl.sh
 ```
+
+### Windows: `setup-local-kubectl.ps1`
+
+**For Windows users, we have a dedicated PowerShell script:**
+
+**File:** `setup-local-kubectl.ps1` + `setup-local-kubectl.bat`
+
+**Advantages:**
+- ✅ Native Windows PowerShell implementation
+- ✅ Automatic PATH configuration
+- ✅ PowerShell aliases and tab completion
+- ✅ SCP and manual kubeconfig setup options
+- ✅ Force reinstall options
+- ✅ Easy double-click execution with .bat file
+
+**Usage:**
+```powershell
+# Option 1: Double-click setup-local-kubectl.bat
+
+# Option 2: Run PowerShell script directly
+.\setup-local-kubectl.ps1
+
+# Option 3: With parameters
+.\setup-local-kubectl.ps1 -Force -ClusterHost "192.168.1.114"
+```
+
+📖 **See [WINDOWS-KUBECTL-SETUP.md](WINDOWS-KUBECTL-SETUP.md) for complete Windows setup guide**
 
 **What it does:**
 - Detects your OS and architecture automatically
