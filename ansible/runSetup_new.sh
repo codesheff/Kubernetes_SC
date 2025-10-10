@@ -100,6 +100,14 @@ if [ $SKIP_INITIALISE -eq 0 ]; then
 fi
 
 if [ $SKIP_MASTERS -eq 0 ]; then
+    run_step ansible-playbook ${vInventory} ./k8s/install-cni-plugins.yml
+fi
+
+if [ $SKIP_MASTERS -eq 0 ]; then
+    run_step ansible-playbook ${vInventory} ./k8s/flannel-network.yml
+fi
+
+if [ $SKIP_MASTERS -eq 0 ]; then
     run_step ansible-playbook ${vInventory} ./k8s/masters.yml
 fi
 

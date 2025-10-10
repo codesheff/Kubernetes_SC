@@ -1,23 +1,22 @@
 
 - name: Configuration of master node
-  hosts: all
+  hosts: masters
   become: yes
   tasks:
     # - name: install Pod network
     #   become: yes
-    #   #become_user: cranie
     #   environment:
     #     KUBECONFIG: /etc/kubernetes/admin.conf
     #   shell: kubectl apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.6/manifests/calico.yaml
     #   args:
-    #     chdir: /home/cranie
+    #     chdir: "/home/{{ ansible_user }}"
 
     - name: Remove master node taint to allow scheduling on master
       become: yes
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
-      shell: kubectl taint nodes master node-role.kubernetes.io/control-plane-
-      when: "'masters' in group_names"
+      shell: kubectl taint nodes {{ inventory_hostname }} node-role.kubernetes.io/control-plane- || true
+      ignore_errors: yes
 
 
 
@@ -25,47 +24,47 @@
 #   hosts: masters
 #   become: yes
 #   vars:
-#     cranie_home: /home/cranie
+#     user_home: "/home/{{ ansible_user }}"
 #     calico_version: "v3.30.3"
 #     crd_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/operator-crds.yaml"
 #     operator_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml"
 #     custom_resources_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/custom-resources.yaml"
-#     custom_resources_local: "{{ cranie_home }}/custom-resources.yaml"
+#     custom_resources_local: "{{ user_home }}/custom-resources.yaml"
 
 #   tasks:
 
 #     - name: Download Tigera operator CRDs
-#       become_user: cranie
+#       become_user: "{{ ansible_user }}"
 #       get_url:
 #         url: "{{ crd_url }}"
-#         dest: "{{ cranie_home }}/operator-crds.yaml"
+#         dest: "{{ user_home }}/operator-crds.yaml"
 #         mode: '0644'
 
 #     - name: Apply Tigera operator CRDs
-#       become_user: cranie
+#       become_user: "{{ ansible_user }}"
 #       shell: kubectl create -f operator-crds.yaml
 #       args:
-#         chdir: "{{ cranie_home }}"
+#         chdir: "{{ user_home }}"
 #       register: crd_apply
 #       changed_when: "'created' in crd_apply.stdout or 'already exists' in crd_apply.stdout"
     
 #     - name: Download Tigera operator manifest
-#       become_user: cranie
+#       become_user: "{{ ansible_user }}"
 #       get_url:
 #         url: "{{ operator_url }}"
-#         dest: "{{ cranie_home }}/tigera-operator.yaml"
+#         dest: "{{ user_home }}/tigera-operator.yaml"
 #         mode: '0644'
 
 #     - name: Apply Tigera operator
-#       become_user: cranie
+#       become_user: "{{ ansible_user }}"
 #       shell: kubectl create -f tigera-operator.yaml
 #       args:
-#         chdir: "{{ cranie_home }}"
+#         chdir: "{{ user_home }}"
 #       register: operator_apply
 #       changed_when: "'created' in operator_apply.stdout or 'already exists' in operator_apply.stdout"
 
 #     - name: Download Calico custom resources manifest
-#       become_user: cranie
+#       become_user: "{{ ansible_user }}"
 #       get_url:
 #         url: "{{ custom_resources_url }}"
 #         dest: "{{ custom_resources_local }}"
@@ -74,15 +73,15 @@
 #     # Optional: Add a task here to template or modify the custom-resources.yaml if needed
 
 #     - name: Apply Calico custom resources manifest
-#       become_user: cranie
+#       become_user: "{{ ansible_user }}"
 #       shell: kubectl create -f custom-resources.yaml
 #       args:
-#         chdir: "{{ cranie_home }}"
+#         chdir: "{{ user_home }}"
 #       register: cr_apply
 #       changed_when: "'created' in cr_apply.stdout or 'already exists' in cr_apply.stdout"
 
 #     - name: Wait for Calico pods to be running in calico-system namespace
-#       become_user: cranie
+#       become_user: "{{ ansible_user }}"
 #       command: kubectl get pods -n calico-system --field-selector=status.phase=Running
 #       register: calico_pods
 #       retries: 20
@@ -125,7 +124,7 @@
 
 #     - name: Get current kube-proxy ConfigMap
 #       become: yes
-#       become_user: cranie
+#       become_user: "{{ ansible_user }}"
 #       command: kubectl -n kube-system get configmap kube-proxy -o yaml
 #       register: kubeproxy_configmap_yaml
 
@@ -156,5 +155,5 @@
 
 #     - name: Apply patched kube-proxy ConfigMap
 #       become: yes
-#       become_user: cranie
+#       become_user: "{{ ansible_user }}"
 #       command: kubectl apply -f /tmp/kube-proxy-patched.yaml -n kube-system
