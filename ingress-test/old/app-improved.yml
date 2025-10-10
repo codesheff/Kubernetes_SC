@@ -1,0 +1,90 @@
+# Improved version with Deployments for better production readiness
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-shield
+  labels:
+    app: shield
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: shield
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-hydra
+  labels:
+    app: hydra
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: hydra
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shield-deployment
+  labels:
+    app: shield
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shield
+  template:
+    metadata:
+      labels:
+        app: shield
+    spec:
+      containers:
+      - name: shield-ctr
+        image: nigelpoulton/k8sbook:shield-ingress
+        ports:
+        - containerPort: 8080
+        imagePullPolicy: IfNotPresent
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hydra-deployment
+  labels:
+    app: hydra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hydra
+  template:
+    metadata:
+      labels:
+        app: hydra
+    spec:
+      containers:
+      - name: hydra-ctr
+        image: nigelpoulton/k8sbook:hydra-ingress
+        ports:
+        - containerPort: 8080
+        imagePullPolicy: IfNotPresent
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+          requests:
+            memory: "64Mi"
+            cpu: "250m"

@@ -1,0 +1,60 @@
+# Fixed ingress with better path handling
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mcu-host-based
+  annotations:
+    # Remove rewrite-target for host-based routing
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: shield.mcu.local  # Changed to .local for easier testing
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-shield
+            port:
+              number: 8080
+  - host: hydra.mcu.local   # Changed to .local for easier testing
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-hydra
+            port:
+              number: 8080
+---
+# Separate ingress for path-based routing
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mcu-path-based
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: mcu.local  # Single host for path-based routing
+    http:
+      paths:
+      - path: /shield(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: svc-shield
+            port:
+              number: 8080
+      - path: /hydra(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: svc-hydra
+            port:
+              number: 8080
