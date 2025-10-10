@@ -84,7 +84,7 @@ if [ $SKIP_RESET -eq 0 ]; then
 fi
 
 if [ $SKIP_SETUP -eq 0 ]; then
-    run_step ansible-playbook ${vInventory} ./ansible/configure-pi.yml
+    run_step ansible-playbook ${vInventory} ./configure-pi.yml
 fi
 
 if [ $SKIP_REBOOT -eq 0 ]; then
@@ -111,9 +111,9 @@ if [ $SKIP_MASTERS -eq 0 ]; then
     run_step ansible-playbook ${vInventory} ./k8s/masters.yml
 fi
 
-if [ $SKIP_WORKERS -eq 0 ]; then
-    run_step ansible-playbook ${vInventory} ./k8s/workers.yml
-fi
+# if [ $SKIP_WORKERS -eq 0 ]; then
+#     run_step ansible-playbook ${vInventory} ./k8s/workers.yml
+# fi
 
 if [ $SKIP_METALLB -eq 0 ]; then
     run_step ansible-playbook ${vInventory} ./k8s/metallb.yml
