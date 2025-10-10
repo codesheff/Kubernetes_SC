@@ -2,7 +2,7 @@
 # ============================================
 # NGINX Reverse Proxy Setup for Ingress
 # ============================================
-# This playbook sets up nginx on the master node to proxy
+# This playbook sets up nginx on the control node to proxy
 # HTTP traffic from port 80 to the ingress controller NodePort
 
 - name: Setup NGINX reverse proxy for Ingress Controller

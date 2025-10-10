@@ -10,7 +10,7 @@
 - **External IP**: 192.168.1.75 (MetalLB assigned)
 - **HTTP Port**: 80
 - **HTTPS Port**: 443
-- **Raspberry Pi**: 192.168.1.112 (eth0 primary interface)
+- **Raspberry Pi**: get-from-config- e.g 192.168.1.112 (eth0 primary interface)
 
 ### Ingress Controller:
 - **Type**: NGINX Ingress Controller

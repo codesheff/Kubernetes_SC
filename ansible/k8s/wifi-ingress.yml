@@ -224,7 +224,7 @@
           
           🎯 Why This Works on WiFi:
           - Uses NodePort (no Layer 2 ARP requirements)
-          - NGINX proxy on master node handles routing
+          - NGINX proxy on control node handles routing
           - Compatible with WiFi access point restrictions
           - Standard HTTP/HTTPS ports for browser compatibility
           

@@ -1,58 +1,58 @@
 
-- name: Configuration of master node
+- name: Configuration of control node
   hosts: masters
   become: yes
   tasks:
 
     - name: Install MetalLB manifests
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       environment:
-        KUBECONFIG: /home/cranie/.kube/config
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
       shell: kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/{{ metallb_version }}/config/manifests/metallb-native.yaml
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       vars:
         metallb_version: v0.15.2
 
 
 
 
-    # - name: Remove master node taint to allow scheduling on master
+    # - name: Remove control node taint to allow scheduling on master
     #   become: yes
-    #   become_user: cranie
+    #   become_user: "{{ ansible_user }}"
     #   environment:
-    #     KUBECONFIG: /home/cranie/.kube/config
-    #   shell: kubectl taint nodes master node-role.kubernetes.io/control-plane-
+    #     KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    #   shell: kubectl taint nodes control node-role.kubernetes.io/control-plane-
     #   args:
-    #     chdir: /home/cranie
+    #     chdir: /home/{{ ansible_user }}
 
 
     - name: Wait for metallb-system namespace to exist
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: kubectl get namespace metallb-system
       register: ns_check
       retries: 15
       delay: 5
       until: ns_check.rc == 0
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
 
     - name: Wait for MetalLB deployments to exist
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: kubectl get deployment controller -n metallb-system
       register: deployment_check
       retries: 15
       delay: 5
       until: deployment_check.rc == 0
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
 
     - name: Check node readiness and install CNI components
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: |
         echo "=== Node Status ==="
         kubectl get nodes -o wide
@@ -65,7 +65,7 @@
         echo "=== CNI Pods Status ==="
         kubectl get pods -n kube-system | grep -E "(flannel|calico|weave|cilium)" || echo "No CNI pods found"
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: node_cni_initial_check
 
     - name: Display initial CNI status
@@ -115,7 +115,7 @@
 
     - name: Install Flannel CNI if no CNI is present
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: |
         # Check if CNI is installed
         if ! kubectl get pods -n kube-system | grep -E "(flannel|calico|weave|cilium)" > /dev/null; then
@@ -125,7 +125,7 @@
           echo "CNI already present"
         fi
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: flannel_install
 
     - name: Display Flannel installation result
@@ -143,7 +143,7 @@
 
     - name: Wait for CNI pods to be ready
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: |
         echo "Waiting for CNI pods to be ready..."
         
@@ -174,7 +174,7 @@
         echo "=== Final CNI Status ==="
         kubectl get pods -n kube-system | grep -E "(flannel|calico|weave|cilium)" || echo "No CNI pods found"
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: cni_pods_status
       failed_when: false
 
@@ -184,7 +184,7 @@
 
     - name: Check if we need to troubleshoot Flannel installation
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: |
         echo "=== Troubleshooting Flannel ==="
         
@@ -204,7 +204,7 @@
           kubectl get pods -n kube-system | grep flannel || echo "Still no flannel pods"
         fi
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: flannel_troubleshoot
       failed_when: false
 
@@ -214,28 +214,28 @@
 
     - name: Wait for node to become Ready (after CNI installation)
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: kubectl wait --for=condition=Ready nodes --all --timeout=300s
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: node_ready_wait
       failed_when: false
 
     - name: Remove node not-ready taint if still present
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: |
         # Remove not-ready taint if it exists
         kubectl taint nodes --all node.kubernetes.io/not-ready- || echo "Taint already removed or doesn't exist"
         # Remove unreachable taint if it exists  
         kubectl taint nodes --all node.kubernetes.io/unreachable- || echo "Taint already removed or doesn't exist"
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       when: node_ready_wait.rc != 0
 
     - name: Debug MetalLB controller status before patching
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: |
         echo "=== MetalLB Pods Status ==="
         kubectl get pods -n metallb-system -o wide
@@ -246,7 +246,7 @@
         echo "=== Events ==="
         kubectl get events -n metallb-system --sort-by='.lastTimestamp'
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: metallb_debug_before
       failed_when: false
 
@@ -256,9 +256,9 @@
 
     - name: Add tolerations to MetalLB controller deployment
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       environment:
-        KUBECONFIG: /home/cranie/.kube/config
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
       shell: |
         kubectl patch deployment controller -n metallb-system \
           --type='json' \
@@ -272,23 +272,23 @@
             ]
           }]'
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: metallb_toleration_patch
       failed_when: false
 
     - name: Wait for MetalLB controller to be ready (with extended timeout)
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: |
         kubectl wait --namespace metallb-system --for=condition=Available deployment/controller --timeout=300s
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: controller_wait
       failed_when: false
 
     - name: Debug MetalLB controller if still not ready
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: |
         echo "=== Final MetalLB Pods Status ==="
         kubectl get pods -n metallb-system -o wide
@@ -297,7 +297,7 @@
         echo "=== Pod Descriptions ==="
         kubectl describe pods -n metallb-system
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: metallb_debug_final
       when: controller_wait.rc != 0
 
@@ -313,9 +313,9 @@
 
     - name: Create MetalLB address pool config
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       copy:
-        dest: /home/cranie/metallb-config.yaml
+        dest: /home/{{ ansible_user }}/metallb-config.yaml
         content: |
           apiVersion: metallb.io/v1beta1
           kind: IPAddressPool
@@ -341,28 +341,28 @@
 
     - name: Configure MetalLB strictARP
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       environment:
-        KUBECONFIG: /home/cranie/.kube/config
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
       shell: |
         kubectl patch configmap kube-proxy -n kube-system --type merge -p '{"data":{"config.conf":"apiVersion: kubeproxy.config.k8s.io/v1alpha1\nkind: KubeProxyConfiguration\nmode: \"iptables\"\nstrictARP: true\n"}}'
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
 
 
     - name: Apply MetalLB address pool config
       become: yes
-      become_user: cranie
-      shell: kubectl apply -f /home/cranie/metallb-config.yaml
+      become_user: "{{ ansible_user }}"
+      shell: kubectl apply -f /home/{{ ansible_user }}/metallb-config.yaml
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
 
     - name: Verify MetalLB installation
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: kubectl get all -n metallb-system
       args:
-        chdir: /home/cranie
+        chdir: /home/{{ ansible_user }}
       register: metallb_status
 
     - name: Display MetalLB status

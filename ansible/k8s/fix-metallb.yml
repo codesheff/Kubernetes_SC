@@ -128,7 +128,7 @@
       register: final_service
       changed_when: false
 
-    - name: Test new IP connectivity from master node
+    - name: Test new IP connectivity from control node
       shell: |
         export KUBECONFIG=/etc/kubernetes/admin.conf
         NEW_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')

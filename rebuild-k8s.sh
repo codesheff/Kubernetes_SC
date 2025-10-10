@@ -7,6 +7,8 @@
 
 set -e  # Exit on any error
 
+VSCODE_DEBUG=1
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -19,6 +21,7 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPT_DIR="/mnt/c/git/SC_Kubernetes"
 INVENTORY="./ansible/inventory/all-server.ini"
+CONTROL_IP="192.168.1.114"
 
 # Function to print colored output
 print_step() {
@@ -151,9 +154,9 @@ test_connectivity() {
     print_step "Testing Connectivity"
     
     print_info "Checking network interfaces on Raspberry Pi..."
-    local network_info=$(ansible master -i "$INVENTORY" -m shell -a "ip addr show | grep 'inet ' | grep -v 127.0.0.1" 2>/dev/null | grep "CHANGED" -A 10 || true)
-    if echo "$network_info" | grep -q "192.168.1.112"; then
-        print_success "Ethernet interface confirmed: 192.168.1.112"
+    local network_info=$(ansible control -i "$INVENTORY" -m shell -a "ip addr show | grep 'inet ' | grep -v 127.0.0.1" 2>/dev/null | grep "CHANGED" -A 10 || true)
+    if echo "$network_info" | grep -q "$CONTROL_IP"; then
+        print_success "Ethernet interface confirmed: $CONTROL_IP"
     else
         print_warning "Ethernet interface not detected properly"
     fi
@@ -190,13 +193,13 @@ main() {
     echo -e "${RED}⚠️  ALL EXISTING DATA WILL BE LOST! ⚠️${NC}"
     echo ""
     echo "Steps that will be performed:"
-    echo "1. Verify Ansible connection (user: cranie)"
+    echo "1. Verify Ansible connection (user: pi)"
     echo "2. Reset existing Kubernetes cluster"
     echo "3. Thorough cleanup of certificates and processes"
     echo "4. Set up base Kubernetes environment"
     echo "5. Configure Ethernet networking priority"
-    echo "6. Initialize Kubernetes master (with correct IP)"
-    echo "7. Configure master node"
+    echo "6. Initialize Kubernetes control (with correct IP)"
+    echo "7. Configure control node"
     echo "8. Setup local kubectl configuration"
     echo "9. Install MetalLB base system"
     echo "10. Configure MetalLB for Ethernet"
@@ -205,23 +208,30 @@ main() {
     echo "13. Verify complete setup"
     echo ""
     echo "🔧 Key improvements in this version:"
-    echo "• Fixed user from 'pi' to 'cranie'"
-    echo "• Added IP address verification (192.168.1.112)"
+    echo "• User updated to 'pi'"
+    echo "• Added IP address verification ($CONTROL_IP)"
     echo "• Moved Ethernet setup before Kubernetes init"
     echo "• Enhanced certificate cleanup"
     echo "• Better error handling for dual network interfaces"
     echo "• Fixed MetalLB installation sequence"
     echo ""
-    read -p "Continue? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_info "Rebuild cancelled"
-        exit 0
+    
+    # Check if running in debug/automated mode
+    if [ "$VSCODE_DEBUG" = "1" ] || [ "$CI" = "true" ] || [ "$AUTOMATED" = "1" ] || [ -n "$VSCODE_PID" ]; then
+        print_info "Debug/automated mode detected - proceeding automatically in 5 seconds..."
+        sleep 5
+    else
+        read -p "Continue? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Rebuild cancelled"
+            exit 0
+        fi
     fi
 
     # Step 1: Verify Ansible connection
-    print_info "Verifying Ansible connection to Raspberry Pi (user: cranie)..."
-    if ansible master -i "$INVENTORY" -m ping >/dev/null 2>&1; then
+    print_info "Verifying Ansible connection to Raspberry Pi (user: pi)..."
+    if ansible control -i "$INVENTORY" -m ping >/dev/null 2>&1; then
         print_success "Ansible connection successful"
     else
         print_error "Ansible connection failed. Check SSH key and inventory configuration."
@@ -230,9 +240,9 @@ main() {
 
     # Check for dual network interfaces issue
     print_info "Checking network configuration..."
-    local network_check=$(ansible master -i "$INVENTORY" -m shell -a "ip addr show | grep 'inet ' | grep -v 127.0.0.1" 2>/dev/null | grep "CHANGED" -A 10 || true)
-    if echo "$network_check" | grep -q "192.168.1.114" && echo "$network_check" | grep -q "192.168.1.112"; then
-        print_warning "Both WiFi (192.168.1.114) and Ethernet (192.168.1.112) are active"
+    local network_check=$(ansible control -i "$INVENTORY" -m shell -a "ip addr show | grep 'inet ' | grep -v 127.0.0.1" 2>/dev/null | grep "CHANGED" -A 10 || true)
+    if echo "$network_check" | grep -q "192.168.1.114" && echo "$network_check" | grep -q "$CONTROL_IP"; then
+        print_warning "Both WiFi (192.168.1.114) and Ethernet ($CONTROL_IP) are active"
         print_info "This can cause Kubernetes certificate issues"
         print_info "Ethernet has priority, but we'll ensure clean certificates"
     fi
@@ -245,8 +255,8 @@ main() {
     
     # Additional cleanup for certificate issues
     print_info "Performing thorough cleanup for certificate issues..."
-    ansible master -i "$INVENTORY" -m shell -a "sudo rm -rf /etc/kubernetes/pki/* || true" >/dev/null 2>&1 || true
-    ansible master -i "$INVENTORY" -m shell -a "sudo rm -rf ~/.kube/config || true" >/dev/null 2>&1 || true
+    ansible control -i "$INVENTORY" -m shell -a "sudo rm -rf /etc/kubernetes/pki/* || true" >/dev/null 2>&1 || true
+    ansible control -i "$INVENTORY" -m shell -a "sudo rm -rf ~/.kube/config || true" >/dev/null 2>&1 || true
     print_success "Additional cleanup completed"
 
     # Step 2: Set up base environment
@@ -257,21 +267,21 @@ main() {
     
     # Verify Ethernet configuration
     print_info "Verifying Ethernet configuration..."
-    local eth_check=$(ansible master -i "$INVENTORY" -m shell -a "ip route show default | head -1" 2>/dev/null | grep "CHANGED" -A 1 || true)
-    if echo "$eth_check" | grep -q "192.168.1.112"; then
+    local eth_check=$(ansible control -i "$INVENTORY" -m shell -a "ip route show default | head -1" 2>/dev/null | grep "CHANGED" -A 1 || true)
+    if echo "$eth_check" | grep -q "$CONTROL_IP"; then
         print_success "Ethernet is configured as primary interface"
     else
         print_warning "Ethernet may not be primary - checking routes..."
-        ansible master -i "$INVENTORY" -m shell -a "ip route show default" 2>/dev/null || true
+        ansible control -i "$INVENTORY" -m shell -a "ip route show default" 2>/dev/null || true
     fi
     
-    # Step 7: Initialize Kubernetes master (with better error handling)
-    print_step "🚀 STEP 7: Initializing Kubernetes master"
-    print_info "This step ensures certificates are generated for the correct IP (192.168.1.112)"
-    run_playbook "./ansible/k8s/initialise.yml" "🚀 STEP 7: Initializing Kubernetes master"
+    # Step 7: Initialize Kubernetes control (with better error handling)
+    print_step "🚀 STEP 7: Initializing Kubernetes control"
+    print_info "This step ensures certificates are generated for the correct IP ($CONTROL_IP)"
+    run_playbook "./ansible/k8s/initialise.yml" "🚀 STEP 7: Initializing Kubernetes control"
     
-    # Step 8: Configure master node
-    run_playbook "./ansible/k8s/masters.yml" "⚙️  STEP 8: Configuring master node"
+    # Step 8: Configure control node
+    run_playbook "./ansible/k8s/masters.yml" "⚙️  STEP 8: Configuring control node"
     
     # Step 9: Setup local kubectl configuration
     print_step "🔧 STEP 9: Setting up local kubectl configuration"
@@ -466,8 +476,8 @@ EOF
     print_success "Kubernetes cluster has been successfully rebuilt!"
     echo ""
     echo -e "${CYAN}📋 SUMMARY:${NC}"
-    echo "• Master Node: 192.168.1.112 (Ethernet primary)"
-    echo "• User: cranie (updated from pi)"
+    echo "• Control Node: $CONTROL_IP (Ethernet primary)"
+    echo "• User: pi"
     echo "• MetalLB LoadBalancer: 192.168.1.75"
     echo "• Ingress Controller: NGINX (LoadBalancer type)"
     echo "• Test Applications: Shield & Hydra"

@@ -1,11 +1,11 @@
 
-- name: Generating token on master node and token deployment to worker node
+- name: Generating token on control node and token deployment to worker node
   hosts: all
   become: yes
   tasks:
     - name: get join command
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: kubeadm token create --print-join-command
       register: join_command_raw
       when: "'masters' in group_names"
@@ -31,7 +31,7 @@
 
     - name: Label worker nodes
       become: yes
-      become_user: cranie
+      become_user: "{{ ansible_user }}"
       shell: kubectl label node {{ item }} node-role.kubernetes.io/worker=worker
       when: "'masters' in group_names"
       loop: "{{ groups['workers'] }}"

@@ -4,8 +4,8 @@
 
 ### 1. Network Configuration
 - [ ] Raspberry Pi connected via Ethernet (primary)
-- [ ] IP Address: 192.168.1.112 confirmed
-- [ ] SSH access working with 'cranie' user
+- [ ] IP Address: <get_from_config> confirmed
+- [ ] SSH access working with 'pi' user
 - [ ] Router ready for potential port forwarding
 
 ### 2. System Requirements
@@ -28,17 +28,17 @@
 
 ```bash
 # 1. Verify SSH connectivity
-ssh cranie@192.168.1.112 "echo 'SSH connection successful'"
+ssh pi@control "echo 'SSH connection successful'"
 
 # 2. Check disk space
-ssh cranie@192.168.1.112 "df -h / | grep -v Filesystem"
+ssh pi@control "df -h / | grep -v Filesystem"
 
 # 3. Verify Ansible can reach the host
 ansible -i ansible/inventory/all-server.ini all -m ping
 
 # 4. Check if any existing Kubernetes processes are running
-ssh cranie@192.168.1.112 "sudo systemctl status kubelet || echo 'No kubelet running'"
-ssh cranie@192.168.1.112 "sudo systemctl status containerd || echo 'No containerd running'"
+ssh pi@control "sudo systemctl status kubelet || echo 'No kubelet running'"
+ssh pi@1control "sudo systemctl status containerd || echo 'No containerd running'"
 ```
 
 ## Expected Rebuild Process

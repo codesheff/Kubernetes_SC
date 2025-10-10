@@ -2,7 +2,7 @@
 # ============================================
 # NGINX Reverse Proxy Setup for MetalLB
 # ============================================
-# This playbook sets up nginx on the master node to proxy
+# This playbook sets up nginx on the control node to proxy
 # HTTP traffic from port 80 to the MetalLB LoadBalancer
 
 - name: Setup NGINX reverse proxy for MetalLB LoadBalancer
@@ -56,8 +56,8 @@
           NGINX REVERSE PROXY → MetalLB SETUP COMPLETE!
           ============================================
           
-          🌐 You can now access these URLs on master node:
-          - http://192.168.1.112/ (with Host headers)
+          🌐 You can now access these URLs on control node:
+          - http://<get_from_config>/ (with Host headers)
           
           🔧 Configuration Details:
           - Nginx proxies requests from port 80 to MetalLB {{ metallb_ip }}

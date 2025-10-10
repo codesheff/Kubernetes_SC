@@ -3,7 +3,7 @@
 # Kubernetes Cluster Initialization Playbook
 # ============================================================================
 # 
-# Purpose: Initialize a Kubernetes cluster on master nodes with safety checks
+# Purpose: Initialize a Kubernetes cluster on control nodes with safety checks
 #
 # Usage:
 #   Normal run (safe):     ansible-playbook -i inventory/all-server.ini k8s/initialise.yml
@@ -24,13 +24,13 @@
 #   - CNI plugins will be installed separately
 #
 # Outputs:
-#   - Kubernetes cluster initialized on master node
+#   - Kubernetes cluster initialized on control node
 #   - kubeconfig file downloaded to ../kubeconfig
-#   - User kubectl configuration in /home/cranie/.kube/config
+#   - User kubectl configuration in /home/{{ ansible_user }}/.kube/config
 #
 # ============================================================================
 
-- name: Generating token on master node and token deployment to worker node
+- name: Generating token on control node and token deployment to worker node
   hosts: masters
   become: yes
   tasks:
@@ -170,14 +170,14 @@
     # ========================================================================
     # Kubectl Configuration Setup
     # ========================================================================
-    # Configure kubectl for the cranie user and download config to local machine
+    # Configure kubectl for the {{ ansible_user }} user and download config to local machine
 
     - name: create .kube directory and copy kube config file
       shell: "{{ item }}"
       loop:
-        -  mkdir -p /home/cranie/.kube                                    # Create user kubectl directory
-        -  cp -f /etc/kubernetes/admin.conf /home/cranie/.kube/config     # Copy admin config for user
-        -  chown -R cranie:cranie /home/cranie/.kube/                     # Set proper ownership
+        -  mkdir -p /home/{{ ansible_user }}/.kube                                    # Create user kubectl directory
+        -  cp -f /etc/kubernetes/admin.conf /home/{{ ansible_user }}/.kube/config     # Copy admin config for user
+        -  chown -R {{ ansible_user }}:{{ ansible_user }} /home/{{ ansible_user }}/.kube/                     # Set proper ownership
       when: k8s_initialized.stat.exists or kubeadm_init_result.changed
 
     - name: Fetch kubeconfig to local machine
@@ -281,7 +281,7 @@
               echo "Please check:"
               echo "1. Network connectivity to {{ ansible_default_ipv4.address }}:6443"
               echo "2. Firewall settings"
-              echo "3. Cluster status on master node"
+              echo "3. Cluster status on control node"
               exit 1
           fi
           
@@ -355,7 +355,7 @@
           1. Check network: telnet {{ ansible_default_ipv4.address }} 6443
           2. Verify files exist: ls -la {{ playbook_dir }}/../kubeconfig {{ playbook_dir }}/../ca.crt
           3. Run setup script: {{ playbook_dir }}/../setup-kubectl.sh
-          4. Check cluster status on master: kubectl get nodes (on master node)
+          4. Check cluster status on master: kubectl get nodes (on control node)
           
           Next Steps:
           - Install a CNI plugin (Flannel, Calico, etc.)
