@@ -4,16 +4,26 @@
   become: true
   tasks:
 
-    - name: Ensure python3-pip is installed
+    - name: Ensure python3-pip is installed (Ubuntu/Debian)
+      package:
+        name: 
+          - python3-pip
+          - python3-kubernetes
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Ensure python3-pip is installed (RHEL/CentOS)
       package:
         name: python3-pip
         state: present
+      when: ansible_os_family == "RedHat"
 
-    - name: Install Kubernetes Python client library with pip
+    - name: Install Kubernetes Python client library with pip (RHEL/CentOS only)
       pip:
         name: kubernetes
         executable: /usr/bin/pip3
         state: present
+      when: ansible_os_family == "RedHat"
 
     # curl -skSL https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/v4.11.0/deploy/uninstall-driver.sh | bash -s v4.11.0 --
     # git clone https://github.com/kubernetes-csi/csi-driver-nfs.git
@@ -120,26 +130,32 @@
         state: absent
       ignore_errors: yes
 
+    - name: Remove Kubernetes apt repo files (Ubuntu/Debian)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      ignore_errors: yes
+      loop:
+        - /etc/apt/sources.list.d/kubernetes.list
+        - /etc/apt/sources.list.d/kubernetes-xenial.list
+        - /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+        - /usr/share/keyrings/kubernetes-archive-keyring.gpg
+      when: ansible_os_family == "Debian"
+
     - name: Remove Kubernetes yum repo file (RHEL/CentOS)
       ansible.builtin.file:
         path: /etc/yum.repos.d/kubernetes.repo
         state: absent
       ignore_errors: yes
+      when: ansible_os_family == "RedHat"
 
-    - name: Remove Kubernetes apt repo file (Debian/Ubuntu)
-      ansible.builtin.file:
-        path: /etc/apt/sources.list.d/kubernetes.list
-        state: absent
-      ignore_errors: yes
-
-    - name: Clean all yum caches (RHEL) or apt caches (Ubuntu)
+    - name: Clean package caches based on OS family
       ansible.builtin.command: "{{ item }}"
       loop:
-        - "dnf clean all"
-        - "apt-get clean"
+        - "{{ 'apt-get clean && apt-get autoremove -y' if ansible_os_family == 'Debian' else 'dnf clean all' }}"
       ignore_errors: yes
 
-    - name: Remove installed Kubernetes packages (kubelet, kubeadm, kubectl)
+    - name: Remove installed Kubernetes packages (Ubuntu/Debian)
       ansible.builtin.package:
         name:
           - kubelet
@@ -147,20 +163,55 @@
           - kubectl
         state: absent
       ignore_errors: yes
+      when: ansible_os_family == "Debian"
 
-    - name: Remove Docker and containerd packages (optional)
+    - name: Remove installed Kubernetes packages (RHEL/CentOS)
+      ansible.builtin.package:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: absent
+      ignore_errors: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Remove Docker and containerd packages (Ubuntu/Debian)
+      ansible.builtin.package:
+        name:
+          - docker.io
+          - docker-ce
+          - containerd
+          - containerd.io
+        state: absent
+      ignore_errors: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Remove Docker and containerd packages (RHEL/CentOS)
       ansible.builtin.package:
         name:
           - docker-ce
           - containerd.io
         state: absent
       ignore_errors: yes
+      when: ansible_os_family == "RedHat"
 
-    - name: Remove Docker CE repo (optional, RHEL)
+    - name: Remove Docker CE repo (RHEL/CentOS)
       ansible.builtin.file:
         path: /etc/yum.repos.d/docker-ce.repo
         state: absent
       ignore_errors: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Remove Docker GPG key and repo (Ubuntu/Debian)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      ignore_errors: yes
+      loop:
+        - /etc/apt/sources.list.d/docker.list
+        - /etc/apt/keyrings/docker.gpg
+        - /usr/share/keyrings/docker-archive-keyring.gpg
+      when: ansible_os_family == "Debian"
 
     - name: Remove containerd config files
       ansible.builtin.file:
@@ -186,11 +237,16 @@
         state: absent
       ignore_errors: yes
 
-    - name: Remove kubelet service file and reload systemd daemon
+    - name: Remove kubelet service file and related systemd files
       ansible.builtin.file:
-        path: /etc/systemd/system/kubelet.service
+        path: "{{ item }}"
         state: absent
       ignore_errors: yes
+      loop:
+        - /etc/systemd/system/kubelet.service
+        - /etc/systemd/system/kubelet.service.d
+        - /lib/systemd/system/kubelet.service
+        - /usr/lib/systemd/system/kubelet.service
 
     - name: Reload systemd daemon
       ansible.builtin.command: systemctl daemon-reload
@@ -207,37 +263,41 @@
         replace: '\1'
       ignore_errors: yes
 
-    - name: Provide a summary
-      ansible.builtin.debug:
-        msg: "Kubernetes and related packages reset and cleaned on {{ inventory_hostname }}"
-
-
-
-
-    - name: Stop containerd service if running
-      ansible.builtin.systemd:
-        name: containerd
-        state: stopped
-      ignore_errors: true
-
-    - name: Disable containerd service
-      ansible.builtin.systemd:
-        name: containerd
-        enabled: false
-      ignore_errors: true
-
-    - name: Remove containerd systemd unit file
+    - name: Remove additional Ubuntu/Debian specific directories
       ansible.builtin.file:
-        path: /etc/systemd/system/containerd.service
+        path: "{{ item }}"
         state: absent
+      ignore_errors: yes
+      loop:
+        - /var/lib/docker
+        - /var/lib/containerd
+        - /run/containerd
+        - /run/docker
+        - /var/run/docker.sock
+        - /var/run/containerd
+      when: ansible_os_family == "Debian"
 
-    - name: Reload systemd to update unit files after removal
-      ansible.builtin.command: systemctl daemon-reload
+    - name: Remove Kubernetes Python client library (Ubuntu/Debian)
+      package:
+        name: python3-kubernetes
+        state: absent
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
 
-
-
-    - name: Remove Kubernetes Python client library
+    - name: Remove Kubernetes Python client library (RHEL/CentOS)
       pip:
         name: kubernetes
         executable: /usr/bin/pip3
         state: absent
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
+    - name: Update package cache (Ubuntu/Debian)
+      ansible.builtin.apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Provide a summary
+      ansible.builtin.debug:
+        msg: "Kubernetes and related packages reset and cleaned on {{ inventory_hostname }} ({{ ansible_os_family }})"
