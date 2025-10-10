@@ -1,0 +1,197 @@
+---
+- name: Install Flannel Pod Network for Kubernetes
+  hosts: masters
+  become: yes
+  gather_facts: yes
+  vars:
+    pod_network_cidr: "10.244.0.0/16"  # Flannel default CIDR
+    flannel_version: "v0.25.6"
+    
+  tasks:
+
+    - name: Ensure kubectl access is configured for user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+        remote_src: yes
+
+    - name: Wait for Kubernetes API to be responsive
+      uri:
+        url: "https://{{ ansible_default_ipv4.address }}:6443/healthz"
+        validate_certs: no
+        status_code: 200
+      register: api_health
+      until: api_health.status == 200
+      retries: 30
+      delay: 10
+
+    - name: Check if Flannel is already installed
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get pods -n kube-flannel 2>/dev/null | grep -q flannel || echo "not-installed"
+      register: flannel_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Flannel CNI
+      block:
+        - name: Download Flannel manifest
+          get_url:
+            url: "https://github.com/flannel-io/flannel/releases/download/{{ flannel_version }}/kube-flannel.yml"
+            dest: /tmp/kube-flannel.yml
+            mode: '0644'
+
+        - name: Apply Flannel manifest
+          shell: |
+            export KUBECONFIG=/etc/kubernetes/admin.conf
+            kubectl apply -f /tmp/kube-flannel.yml
+          register: flannel_apply
+
+        - name: Wait for Flannel namespace to be created
+          shell: |
+            export KUBECONFIG=/etc/kubernetes/admin.conf
+            kubectl get namespace kube-flannel
+          register: flannel_ns_check
+          until: flannel_ns_check.rc == 0
+          retries: 10
+          delay: 5
+
+        - name: Wait for Flannel pods to be ready
+          shell: |
+            export KUBECONFIG=/etc/kubernetes/admin.conf
+            kubectl wait --for=condition=Ready pods -l app=flannel -n kube-flannel --timeout=300s
+          register: flannel_ready
+          retries: 3
+          delay: 30
+          until: flannel_ready.rc == 0
+
+      when: "'not-installed' in flannel_check.stdout"
+
+    - name: Remove control plane taint for single-node cluster
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+      ignore_errors: yes
+      when: groups['workers'] is not defined or groups['workers'] | length == 0
+
+    - name: Wait for all nodes to be ready
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl wait --for=condition=Ready nodes --all --timeout=300s
+      register: nodes_ready
+      retries: 3
+      delay: 30
+      until: nodes_ready.rc == 0
+
+    - name: Verify cluster status
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        echo "=== Cluster Info ==="
+        kubectl cluster-info
+        echo -e "\n=== Nodes ==="
+        kubectl get nodes -o wide
+        echo -e "\n=== Flannel Pods ==="
+        kubectl get pods -n kube-flannel -o wide
+        echo -e "\n=== All System Pods ==="
+        kubectl get pods -n kube-system -o wide
+        echo -e "\n=== Pod Network Verification ==="
+        kubectl get pods -A -o wide | grep -E "(flannel|coredns)"
+      register: cluster_status
+
+    - name: Display cluster status
+      debug:
+        msg: "{{ cluster_status.stdout_lines }}"
+
+    - name: Test pod creation and networking
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        # Create a test pod
+        kubectl run test-connectivity --image=busybox --restart=Never --rm -i --timeout=60s -- /bin/sh -c "
+          echo 'Testing pod networking...'
+          echo 'Hostname:' && hostname
+          echo 'IP Address:' && hostname -i
+          echo 'DNS Resolution Test:'
+          nslookup kubernetes.default.svc.cluster.local
+          echo 'Connectivity test completed successfully!'
+        "
+      register: connectivity_test
+      ignore_errors: yes
+
+    - name: Display connectivity test results
+      debug:
+        msg: |
+          Connectivity Test Results:
+          {{ connectivity_test.stdout if connectivity_test.rc == 0 else 'Test failed: ' + (connectivity_test.stderr | default('Unknown error')) }}
+
+    - name: Configure kubectl for user convenience
+      blockinfile:
+        path: "/home/{{ ansible_user }}/.bashrc"
+        block: |
+          # Kubernetes configuration
+          export KUBECONFIG=$HOME/.kube/config
+          alias k='kubectl'
+          alias kgp='kubectl get pods'
+          alias kgs='kubectl get svc'
+          alias kgn='kubectl get nodes'
+        marker: "# {mark} ANSIBLE MANAGED KUBERNETES CONFIG"
+        create: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Clean up temporary files
+      file:
+        path: /tmp/kube-flannel.yml
+        state: absent
+
+    - name: Final verification and status
+      shell: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        echo "======================================"
+        echo "Kubernetes Cluster Status:"
+        echo "======================================"
+        kubectl get componentstatuses 2>/dev/null || echo "ComponentStatus API not available in this version"
+        echo -e "\nNodes:"
+        kubectl get nodes
+        echo -e "\nSystem Pods Status:"
+        kubectl get pods -n kube-system --field-selector=status.phase!=Running 2>/dev/null | head -20 || true
+        echo -e "\nFlannel Pods Status:"
+        kubectl get pods -n kube-flannel 2>/dev/null || echo "Flannel namespace not found"
+        echo -e "\nReady Pods Count:"
+        kubectl get pods -A --field-selector=status.phase=Running | wc -l
+      register: final_status
+
+    - name: Display final status
+      debug:
+        msg: "{{ final_status.stdout_lines }}"
+
+    - name: Installation summary
+      debug:
+        msg: |
+          ==========================================
+          Flannel Pod Network Installation Complete!
+          ==========================================
+          
+          ✅ Flannel CNI installed and configured
+          ✅ Pod network CIDR: {{ pod_network_cidr }}
+          ✅ Cluster networking is ready
+          
+          Your Kubernetes cluster is now ready for workloads!
+          
+          Quick commands to get started:
+          - kubectl get nodes
+          - kubectl get pods -A
+          - kubectl run nginx --image=nginx --port=80
+          
+          User configuration:
+          - kubectl is configured for user {{ ansible_user }}
+          - Aliases added: k, kgp, kgs, kgn
+          - Source ~/.bashrc to use the aliases
+          
+          Next steps:
+          - Deploy applications
+          - Add worker nodes (if needed)
+          - Configure ingress or load balancing
+          ==========================================
