@@ -3,3 +3,4 @@ ansible/ca.crt
 ansible/kubeconfig
 ansible/kubeconfig.backup
 ansible/setup-kubectl.sh
+ansible/k8s/kubeconfig
