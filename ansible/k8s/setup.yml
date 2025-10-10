@@ -141,6 +141,23 @@
         update_cache: yes
       when: ansible_os_family == "Debian"
 
+    - name: Verify containerd service file exists
+      stat:
+        path: /lib/systemd/system/containerd.service
+      register: containerd_service_file
+
+    - name: Reinstall containerd if service file is missing (Ubuntu/Debian)
+      package:
+        name: containerd
+        state: present
+        force: yes
+      when: ansible_os_family == "Debian" and not containerd_service_file.stat.exists
+
+    - name: Reload systemd daemon if containerd was reinstalled
+      systemd:
+        daemon_reload: yes
+      when: not containerd_service_file.stat.exists
+
     - name: Start and enable containerd service
       service:
         name: containerd
@@ -250,6 +267,23 @@
     - name: Reload systemd daemon to pickup kubelet service
       systemd:
         daemon_reload: yes
+
+    - name: Verify kubelet service file exists
+      stat:
+        path: /lib/systemd/system/kubelet.service
+      register: kubelet_service_file
+
+    - name: Reinstall kubelet if service file is missing (Ubuntu/Debian)
+      package:
+        name: kubelet
+        state: present
+        force: yes
+      when: ansible_os_family == "Debian" and not kubelet_service_file.stat.exists
+
+    - name: Reload systemd daemon again after potential reinstall
+      systemd:
+        daemon_reload: yes
+      when: not kubelet_service_file.stat.exists
 
     - name: Enable kubelet service (it will fail to start until kubeadm init)
       service:

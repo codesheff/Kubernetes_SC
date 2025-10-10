@@ -163,6 +163,7 @@
           - kubeadm
           - kubectl
         state: absent
+        purge: yes  # This ensures complete removal including config files
       ignore_errors: yes
       when: ansible_os_family == "Debian"
 
@@ -188,6 +189,7 @@
           - containerd.io
           - runc
         state: absent
+        purge: yes  # This ensures complete removal including config files
       ignore_errors: yes
       when: ansible_os_family == "Debian"
 
@@ -260,6 +262,10 @@
 
     - name: Reload systemd daemon
       ansible.builtin.command: systemctl daemon-reload
+      ignore_errors: yes
+
+    - name: Reset systemd failed services
+      ansible.builtin.command: systemctl reset-failed
       ignore_errors: yes
 
     - name: Remove swap off entry (optional cleanup)
