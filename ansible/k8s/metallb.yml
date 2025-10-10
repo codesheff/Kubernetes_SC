@@ -1,74 +1,70 @@
 
-- name: Configuration of master node
+- name: Configuration of MetalLB Load Balancer
   hosts: masters
   become: yes
+  vars:
+    metallb_version: "v0.15.2"
+    user_home: "/home/{{ ansible_user }}"
+    # Auto-detect network range based on control node IP
+    ip_address_pool: "{{ ansible_default_ipv4.address | regex_replace('\\.[0-9]+$', '.75-') }}{{ ansible_default_ipv4.address | regex_replace('\\.[0-9]+$', '.100') }}"
+    address_pool_name: "default"
+    advertisement_name: "default"
   tasks:
 
     - name: Install MetalLB manifests
       become: yes
-      become_user: cranie
       environment:
-        KUBECONFIG: /home/cranie/.kube/config
+        KUBECONFIG: /etc/kubernetes/admin.conf
       shell: kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/{{ metallb_version }}/config/manifests/metallb-native.yaml
-      args:
-        chdir: /home/cranie
-      vars:
-        metallb_version: v0.15.2
+      register: metallb_install_result
 
 
 
 
     # - name: Remove master node taint to allow scheduling on master
     #   become: yes
-    #   become_user: cranie
     #   environment:
-    #     KUBECONFIG: /home/cranie/.kube/config
-    #   shell: kubectl taint nodes master node-role.kubernetes.io/control-plane-
-    #   args:
-    #     chdir: /home/cranie
+    #     KUBECONFIG: /etc/kubernetes/admin.conf
+    #   shell: kubectl taint nodes {{ inventory_hostname }} node-role.kubernetes.io/control-plane-
+    #   ignore_errors: yes
 
 
     - name: Add toleration to MetalLB controller deployment
       become: yes
-      become_user: cranie
       environment:
-        KUBECONFIG: /home/cranie/.kube/config
+        KUBECONFIG: /etc/kubernetes/admin.conf
       shell: |
         kubectl patch deployment controller -n metallb-system \
           --type='json' \
           -p='[{"op": "add", "path": "/spec/template/spec/tolerations", "value": [{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]}]'
-      args:
-        chdir: /home/cranie
       register: metallb_toleration_patch
-      failed_when: metallb_toleration_patch.rc != 0
+      failed_when: metallb_toleration_patch.rc != 0 and "not found" not in metallb_toleration_patch.stderr
 
     - name: Wait for metallb-system namespace to exist
       become: yes
-      become_user: cranie
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
       shell: kubectl get namespace metallb-system
       register: ns_check
       retries: 15
       delay: 5
       until: ns_check.rc == 0
-      args:
-        chdir: /home/cranie
 
     - name: Configure MetalLB strictARP
       become: yes
-      become_user: cranie
       environment:
-        KUBECONFIG: /home/cranie/.kube/config
+        KUBECONFIG: /etc/kubernetes/admin.conf
       shell: |
         kubectl patch configmap kube-proxy -n kube-system --type merge -p '{"data":{"config.conf":"apiVersion: kubeproxy.config.k8s.io/v1alpha1\nkind: KubeProxyConfiguration\nmode: \"iptables\"\nstrictARP: true\n"}}'
-      args:
-        chdir: /home/cranie
 
 
     - name: Create MetalLB address pool config
       become: yes
-      become_user: cranie
       copy:
-        dest: /home/cranie/metallb-config.yaml
+        dest: "{{ user_home }}/metallb-config.yaml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
         content: |
           apiVersion: metallb.io/v1beta1
           kind: IPAddressPool
@@ -87,48 +83,81 @@
           spec:
             ipAddressPools:
             - {{ address_pool_name }}
-      vars:
-        ip_address_pool: 192.168.0.75-192.168.0.100
-        address_pool_name: default
-        advertisement_name: default
+
+    - name: Display MetalLB configuration
+      debug:
+        msg: |
+          MetalLB Configuration:
+          - Version: {{ metallb_version }}
+          - IP Address Pool: {{ ip_address_pool }}
+          - Network: {{ ansible_default_ipv4.address }}/{{ ansible_default_ipv4.netmask }}
+          - Config file: {{ user_home }}/metallb-config.yaml
 
     - name: Debug MetalLB controller and webhook pods if not ready
       become: yes
-      become_user: cranie
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
       shell: |
+        echo "=== MetalLB Pods ==="
         kubectl get pods -n metallb-system
+        echo -e "\n=== Controller Deployment ==="
         kubectl describe deployment controller -n metallb-system
-        kubectl logs deployment/controller -n metallb-system --tail=50
-      args:
-        chdir: /home/cranie
+        echo -e "\n=== Controller Logs ==="
+        kubectl logs deployment/controller -n metallb-system --tail=50 || echo "No logs available yet"
       register: metallb_debug
       failed_when: false
 
     - name: Wait for MetalLB controller and webhook to be ready
       become: yes
-      become_user: cranie
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
       shell: |
         kubectl wait --namespace metallb-system --for=condition=Available deployment/controller --timeout=120s
-    #     kubectl wait --namespace metallb-system --for=condition=Available deployment/webhook --timeout=120s
-      args:
-        chdir: /home/cranie
 
 
     - name: Apply MetalLB address pool config
       become: yes
-      become_user: cranie
-      shell: kubectl apply -f /home/cranie/metallb-config.yaml
-      args:
-        chdir: /home/cranie
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      shell: kubectl apply -f "{{ user_home }}/metallb-config.yaml"
+      register: metallb_config_apply
 
     - name: Verify MetalLB installation
       become: yes
-      become_user: cranie
-      shell: kubectl get all -n metallb-system
-      args:
-        chdir: /home/cranie
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      shell: |
+        echo "=== MetalLB Resources ==="
+        kubectl get all -n metallb-system
+        echo -e "\n=== IP Address Pool ==="
+        kubectl get ipaddresspool -n metallb-system -o wide
+        echo -e "\n=== L2 Advertisement ==="
+        kubectl get l2advertisement -n metallb-system -o wide
       register: metallb_status
 
     - name: Display MetalLB status
       debug:
-        msg: "{{ metallb_status.stdout }}"
+        msg: "{{ metallb_status.stdout_lines }}"
+
+    - name: MetalLB Installation Summary
+      debug:
+        msg: |
+          ==========================================
+          MetalLB Installation Complete!
+          ==========================================
+          
+          ✅ MetalLB {{ metallb_version }} installed
+          ✅ IP Address Pool: {{ ip_address_pool }}
+          ✅ L2 Advertisement configured
+          ✅ Controller deployment ready
+          
+          Next steps:
+          - Create LoadBalancer services to test
+          - Verify IP allocation works
+          - Check connectivity to allocated IPs
+          
+          Test command:
+          kubectl run nginx --image=nginx --port=80
+          kubectl expose pod nginx --type=LoadBalancer --port=80
+          kubectl get svc nginx
+          ==========================================
