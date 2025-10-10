@@ -30,7 +30,7 @@ The `reset-kubernetes.yml` playbook removes Kubernetes packages which can someti
 
 ## New Robustness Features
 
-### Kubelet Service Recovery
+### Enhanced Kubelet Service Recovery
 ```yaml
 - name: Verify kubelet service file exists
   stat:
@@ -42,10 +42,11 @@ The `reset-kubernetes.yml` playbook removes Kubernetes packages which can someti
     msg: "Kubelet service file exists: {{ kubelet_service_file.stat.exists }}"
 
 - name: Reinstall kubelet if service file is missing (Ubuntu/Debian)
-  package:
-    name: kubelet
-    state: present
-    force: yes
+  shell: |
+    apt-mark unhold kubelet
+    apt-get remove --purge -y kubelet
+    apt-get install -y kubelet
+    apt-mark hold kubelet
   when: ansible_os_family == "Debian" and not kubelet_service_file.stat.exists
   register: kubelet_reinstalled
 
@@ -53,6 +54,16 @@ The `reset-kubernetes.yml` playbook removes Kubernetes packages which can someti
   fail:
     msg: "Kubelet service file is still missing after reinstall. Manual intervention required."
   when: kubelet_reinstalled is changed and not kubelet_service_final.stat.exists
+```
+
+### Enhanced Package Hold Management in Reset
+```yaml
+- name: Remove installed Kubernetes packages (Ubuntu/Debian)
+  shell: |
+    apt-mark unhold kubelet kubeadm kubectl || true
+    apt-get remove --purge -y kubelet kubeadm kubectl
+  ignore_errors: yes
+  when: ansible_os_family == "Debian"
 ```
 
 ### Enhanced Kubelet Service Enablement

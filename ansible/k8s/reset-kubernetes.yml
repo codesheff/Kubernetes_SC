@@ -157,13 +157,9 @@
       ignore_errors: yes
 
     - name: Remove installed Kubernetes packages (Ubuntu/Debian)
-      ansible.builtin.package:
-        name:
-          - kubelet
-          - kubeadm
-          - kubectl
-        state: absent
-        purge: yes  # This ensures complete removal including config files
+      shell: |
+        apt-mark unhold kubelet kubeadm kubectl || true
+        apt-get remove --purge -y kubelet kubeadm kubectl
       ignore_errors: yes
       when: ansible_os_family == "Debian"
 

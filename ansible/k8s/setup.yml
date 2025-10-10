@@ -147,10 +147,9 @@
       register: containerd_service_file
 
     - name: Reinstall containerd if service file is missing (Ubuntu/Debian)
-      package:
-        name: containerd
-        state: present
-        force: yes
+      shell: |
+        apt-get remove --purge -y containerd
+        apt-get install -y containerd
       when: ansible_os_family == "Debian" and not containerd_service_file.stat.exists
 
     - name: Reload systemd daemon if containerd was reinstalled
@@ -278,10 +277,11 @@
         msg: "Kubelet service file exists: {{ kubelet_service_file.stat.exists }}"
 
     - name: Reinstall kubelet if service file is missing (Ubuntu/Debian)
-      package:
-        name: kubelet
-        state: present
-        force: yes
+      shell: |
+        apt-mark unhold kubelet
+        apt-get remove --purge -y kubelet
+        apt-get install -y kubelet
+        apt-mark hold kubelet
       when: ansible_os_family == "Debian" and not kubelet_service_file.stat.exists
       register: kubelet_reinstalled
 
