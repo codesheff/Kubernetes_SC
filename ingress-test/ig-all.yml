@@ -4,8 +4,14 @@ metadata:
   name: mcu-all
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/default-backend: svc-mcu-landing
 spec:
   ingressClassName: nginx
+  defaultBackend:
+    service:
+      name: svc-mcu-landing
+      port:
+        number: 80
   rules:
   - host: shield.mcu.com
     http:
@@ -44,3 +50,12 @@ spec:
             name: svc-hydra
             port:
               number: 8080
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-mcu-landing
+            port:
+              number: 80

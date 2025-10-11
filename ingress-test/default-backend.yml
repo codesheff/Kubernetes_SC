@@ -1,0 +1,142 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mcu-landing
+  labels:
+    app: mcu-landing
+spec:
+  containers:
+  - name: mcu-landing-ctr
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: html-content
+      mountPath: /usr/share/nginx/html
+  volumes:
+  - name: html-content
+    configMap:
+      name: mcu-landing-html
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-mcu-landing
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: mcu-landing
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcu-landing-html
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>MCU Portal - Welcome</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.0/dist/css/bootstrap.min.css" integrity="sha384-gH2yIJqKdNHPEq0n4Mqa/HGKIhSkIHeL5AyhkYV8i59U5AR6csBvApHHNl/vI1Bx" crossorigin="anonymous">
+        <style>
+            body {
+                background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+                min-height: 100vh;
+                color: white;
+            }
+            .hero {
+                background: rgba(0,0,0,0.4);
+                border-radius: 15px;
+                padding: 3rem;
+                margin: 2rem 0;
+                backdrop-filter: blur(10px);
+            }
+            .app-card {
+                background: rgba(255,255,255,0.1);
+                border: 1px solid rgba(255,255,255,0.2);
+                border-radius: 10px;
+                padding: 1.5rem;
+                margin: 1rem;
+                transition: transform 0.3s;
+            }
+            .app-card:hover {
+                transform: translateY(-5px);
+                background: rgba(255,255,255,0.2);
+            }
+            .shield-color { border-left: 4px solid #0066cc; }
+            .hydra-color { border-left: 4px solid #cc0000; }
+            .btn-custom {
+                background: rgba(255,255,255,0.2);
+                border: 1px solid rgba(255,255,255,0.3);
+                color: white;
+                margin: 0.25rem;
+            }
+            .btn-custom:hover {
+                background: rgba(255,255,255,0.3);
+                color: white;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="hero text-center">
+                <h1 class="display-4 mb-4">🌟 MCU Portal</h1>
+                <p class="lead">Welcome to the Marvel Cinematic Universe Application Portal</p>
+                <p class="text-muted">Select your organization below or use direct access links</p>
+            </div>
+
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="app-card shield-color">
+                        <h3>🛡️ S.H.I.E.L.D</h3>
+                        <p>Strategic Homeland Intervention, Enforcement and Logistics Division</p>
+                        <p><strong>Mission:</strong> Protecting the world from extraordinary threats</p>
+                        <div>
+                            <a href="http://shield.mcu.com" class="btn btn-custom">🔗 shield.mcu.com</a>
+                            <a href="/shield" class="btn btn-custom">📁 /shield</a>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="app-card hydra-color">
+                        <h3>🐙 HYDRA</h3>
+                        <p>Ancient secret organization seeking world domination</p>
+                        <p><strong>Motto:</strong> "Cut off one head, two more shall take its place"</p>
+                        <div>
+                            <a href="http://hydra.mcu.com" class="btn btn-custom">🔗 hydra.mcu.com</a>
+                            <a href="/hydra" class="btn btn-custom">📁 /hydra</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-center mt-4">
+                <div class="alert alert-info" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);">
+                    <h5>🔧 Available Access Methods</h5>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <strong>Host-Based Routing:</strong><br>
+                            <code>shield.mcu.com</code><br>
+                            <code>hydra.mcu.com</code>
+                        </div>
+                        <div class="col-md-6">
+                            <strong>Path-Based Routing:</strong><br>
+                            <code>mcu.com/shield</code><br>
+                            <code>mcu.com/hydra</code>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <footer class="text-center mt-4 text-muted">
+                <p>🚀 Powered by Kubernetes Ingress | 🐋 Container Runtime: containerd</p>
+                <p><small>Default Backend - Handles unmatched routes</small></p>
+            </footer>
+        </div>
+    </body>
+    </html>

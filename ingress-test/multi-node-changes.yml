@@ -1,0 +1,108 @@
+# Multi-Node Kubernetes Setup Changes for Ingress
+# Required modifications when adding a second node
+
+## 1. INGRESS CONTROLLER SCALING
+# Current: Single ingress controller pod
+# Needed: Scale for high availability
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+spec:
+  replicas: 2  # Increase from 1 to 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      app.kubernetes.io/instance: ingress-nginx
+      app.kubernetes.io/component: controller
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                  - ingress-nginx
+              topologyKey: kubernetes.io/hostname
+
+---
+## 2. METALLB SPEAKER VERIFICATION
+# MetalLB speakers will automatically deploy to all nodes via DaemonSet
+# Verify with: kubectl get pods -n metallb-system -o wide
+
+## 3. APPLICATION HIGH AVAILABILITY
+# Consider scaling your applications for redundancy
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shield-deployment
+spec:
+  replicas: 2  # Run shield on both nodes
+  selector:
+    matchLabels:
+      app: shield
+  template:
+    metadata:
+      labels:
+        app: shield
+        env: shield
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - shield
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: shield-ctr
+        image: nigelpoulton/k8sbook:shield-ingress
+        ports:
+        - containerPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hydra-deployment
+spec:
+  replicas: 2  # Run hydra on both nodes
+  selector:
+    matchLabels:
+      app: hydra
+  template:
+    metadata:
+      labels:
+        app: hydra
+        env: hydra
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - hydra
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: hydra-ctr
+        image: nigelpoulton/k8sbook:hydra-ingress
+        ports:
+        - containerPort: 8080
