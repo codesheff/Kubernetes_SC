@@ -305,12 +305,16 @@ display_usage() {
     echo
     print_status "Next steps:"
     echo "  1. Deploy your applications: kubectl apply -f app.yml"
-    echo "  2. Deploy your ingress: kubectl apply -f ig-all.yml"
+    echo "  2. Deploy your ingress: kubectl apply -f ig-itosbl.yml"
     echo "  3. Test the endpoints:"
     echo "     - curl http://shield.mcu.com"
     echo "     - curl http://hydra.mcu.com"
     echo "     - curl http://mcu.com/shield"
     echo "     - curl http://mcu.com/hydra"
+    echo "     - curl http://shield.itosbl.com"
+    echo "     - curl http://hydra.itosbl.com"
+    echo "     - curl http://itosbl.com/shield"
+    echo "     - curl http://itosbl.com/hydra"
     echo
     print_status "Troubleshooting commands:"
     echo "  - kubectl get ingress"

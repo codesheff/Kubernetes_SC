@@ -226,15 +226,25 @@ function Show-Summary {
     Write-Host "  Host-based routing:" -ForegroundColor Gray
     Write-Host "    http://$nodeIP`:$nodePort (with Host: shield.mcu.com)" -ForegroundColor Gray
     Write-Host "    http://$nodeIP`:$nodePort (with Host: hydra.mcu.com)" -ForegroundColor Gray
+    Write-Host "    http://$nodeIP`:$nodePort (with Host: shield.itosbl.com)" -ForegroundColor Gray
+    Write-Host "    http://$nodeIP`:$nodePort (with Host: hydra.itosbl.com)" -ForegroundColor Gray
     Write-Host "  Path-based routing:" -ForegroundColor Gray
     Write-Host "    http://$nodeIP`:$nodePort/shield (with Host: mcu.com)" -ForegroundColor Gray
     Write-Host "    http://$nodeIP`:$nodePort/hydra (with Host: mcu.com)" -ForegroundColor Gray
+    Write-Host "    http://$nodeIP`:$nodePort/shield (with Host: itosbl.com)" -ForegroundColor Gray
+    Write-Host "    http://$nodeIP`:$nodePort/hydra (with Host: itosbl.com)" -ForegroundColor Gray
     
     Write-Host "`n🔧 Manual test commands:" -ForegroundColor White
+    Write-Host "  # MCU.com domain tests:" -ForegroundColor Cyan
     Write-Host "  Invoke-WebRequest -Uri 'http://$nodeIP`:$nodePort' -Headers @{Host='shield.mcu.com'}" -ForegroundColor Gray
     Write-Host "  Invoke-WebRequest -Uri 'http://$nodeIP`:$nodePort' -Headers @{Host='hydra.mcu.com'}" -ForegroundColor Gray
     Write-Host "  Invoke-WebRequest -Uri 'http://$nodeIP`:$nodePort/shield' -Headers @{Host='mcu.com'}" -ForegroundColor Gray
     Write-Host "  Invoke-WebRequest -Uri 'http://$nodeIP`:$nodePort/hydra' -Headers @{Host='mcu.com'}" -ForegroundColor Gray
+    Write-Host "  # ITOSBL.com domain tests:" -ForegroundColor Cyan
+    Write-Host "  Invoke-WebRequest -Uri 'http://$nodeIP`:$nodePort' -Headers @{Host='shield.itosbl.com'}" -ForegroundColor Gray
+    Write-Host "  Invoke-WebRequest -Uri 'http://$nodeIP`:$nodePort' -Headers @{Host='hydra.itosbl.com'}" -ForegroundColor Gray
+    Write-Host "  Invoke-WebRequest -Uri 'http://$nodeIP`:$nodePort/shield' -Headers @{Host='itosbl.com'}" -ForegroundColor Gray
+    Write-Host "  Invoke-WebRequest -Uri 'http://$nodeIP`:$nodePort/hydra' -Headers @{Host='itosbl.com'}" -ForegroundColor Gray
 }
 
 # Main execution

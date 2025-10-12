@@ -5,7 +5,7 @@ This directory contains configuration and scripts for testing Kubernetes Ingress
 ## Files Overview
 
 - `app.yml` - Application pods and services (Shield and Hydra)
-- `ig-all.yml` - Ingress configuration with host-based and path-based routing
+- `ig-itosbl.yml` - Ingress configuration with host-based and path-based routing for both mcu.com and itosbl.com domains
 - `setup-ingress-prerequisites.sh` - Sets up NGINX Ingress Controller and prerequisites
 - `deploy-and-test.sh` - Deploys applications and tests ingress functionality
 - `README.md` - This file
@@ -58,10 +58,14 @@ This script will:
 **Host-based routing:**
 - `shield.mcu.com` → svc-shield
 - `hydra.mcu.com` → svc-hydra
+- `shield.itosbl.com` → svc-shield
+- `hydra.itosbl.com` → svc-hydra
 
 **Path-based routing:**
 - `mcu.com/shield` → svc-shield
 - `mcu.com/hydra` → svc-hydra
+- `itosbl.com/shield` → svc-shield
+- `itosbl.com/hydra` → svc-hydra
 
 ## Manual Operations
 
@@ -72,7 +76,7 @@ kubectl apply -f app.yml
 
 ### Deploy Ingress Only
 ```bash
-kubectl apply -f ig-all.yml
+kubectl apply -f ig-itosbl.yml
 ```
 
 ### Check Status
@@ -168,7 +172,7 @@ nslookup shield.mcu.com
 
 ### Remove Applications and Ingress
 ```bash
-kubectl delete -f ig-all.yml
+kubectl delete -f ig-itosbl.yml
 kubectl delete -f app.yml
 ```
 

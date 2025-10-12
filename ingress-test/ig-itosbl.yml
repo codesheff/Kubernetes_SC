@@ -1,7 +1,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: mcu-all
+  name: mcu-all-itosbl
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
     nginx.ingress.kubernetes.io/default-backend: svc-mcu-landing
@@ -13,6 +13,53 @@ spec:
       port:
         number: 80
   rules:
+  # Host-based routing for itosbl.com domain
+  - host: shield.itosbl.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-shield
+            port:
+              number: 8080
+  - host: hydra.itosbl.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-hydra
+            port:
+              number: 8080
+  # Path-based routing for main domain
+  - host: itosbl.com
+    http:
+      paths:
+      - path: /shield
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-shield
+            port:
+              number: 8080
+      - path: /hydra
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-hydra
+            port:
+              number: 8080
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-mcu-landing
+            port:
+              number: 80
+  # Original mcu.com rules (keep for compatibility)
   - host: shield.mcu.com
     http:
       paths:
@@ -50,6 +97,7 @@ spec:
             name: svc-hydra
             port:
               number: 8080
+  # Default catch-all rule (for IP access and unknown hosts)
   - http:
       paths:
       - path: /

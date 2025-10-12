@@ -78,12 +78,12 @@ deploy_applications() {
 deploy_ingress() {
     print_status "Deploying ingress configuration..."
     
-    if [ ! -f "ig-all.yml" ]; then
-        print_error "ig-all.yml not found in current directory"
+    if [ ! -f "ig-itosbl.yml" ]; then
+        print_error "ig-itosbl.yml not found in current directory"
         exit 1
     fi
     
-    kubectl apply -f ig-all.yml
+    kubectl apply -f ig-itosbl.yml
     print_success "Ingress deployed"
     
     # Wait a moment for ingress to be processed
@@ -142,6 +142,10 @@ test_endpoints() {
         "hydra.mcu.com"
         "mcu.com/shield"
         "mcu.com/hydra"
+        "shield.itosbl.com"
+        "hydra.itosbl.com"
+        "itosbl.com/shield"
+        "itosbl.com/hydra"
     )
     
     for endpoint in "${ENDPOINTS[@]}"; do
@@ -209,7 +213,7 @@ cleanup() {
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         print_status "Cleaning up resources..."
-        kubectl delete -f ig-all.yml --ignore-not-found=true
+        kubectl delete -f ig-itosbl.yml --ignore-not-found=true
         kubectl delete -f app.yml --ignore-not-found=true
         print_success "Resources cleaned up"
     fi
@@ -245,9 +249,9 @@ main() {
 }
 
 # Check if running from correct directory
-if [ ! -f "app.yml" ] || [ ! -f "ig-all.yml" ]; then
+if [ ! -f "app.yml" ] || [ ! -f "ig-itosbl.yml" ]; then
     print_error "Please run this script from the ingress-test directory"
-    print_status "Expected files: app.yml, ig-all.yml"
+    print_status "Expected files: app.yml, ig-itosbl.yml"
     exit 1
 fi
 
