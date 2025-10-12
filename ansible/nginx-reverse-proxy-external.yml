@@ -1,0 +1,662 @@
+---
+- name: Setup NGINX Reverse Proxy for External Internet Access
+  hosts: masters
+  become: yes
+  vars:
+    # Kubernetes ingress controller details
+    k8s_ingress_ip: "192.168.1.75"
+    k8s_ingress_port: "80"
+    k8s_node_ip: "192.168.1.114"
+    k8s_nodeport: "31763"
+    
+    # External access configuration
+    enable_external_access: true
+    server_name_in_redirect: false
+    
+    # Domain configuration
+    domains:
+      - name: "shield.mcu.com"
+        backend: "http://{{ k8s_ingress_ip }}:{{ k8s_ingress_port }}"
+        fallback_backend: "http://{{ k8s_node_ip }}:{{ k8s_nodeport }}"
+      - name: "hydra.mcu.com"
+        backend: "http://{{ k8s_ingress_ip }}:{{ k8s_ingress_port }}"
+        fallback_backend: "http://{{ k8s_node_ip }}:{{ k8s_nodeport }}"
+      - name: "mcu.com"
+        backend: "http://{{ k8s_ingress_ip }}:{{ k8s_ingress_port }}"
+        fallback_backend: "http://{{ k8s_node_ip }}:{{ k8s_nodeport }}"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - curl
+          - ufw
+          - fail2ban
+        state: present
+
+    - name: Configure UFW firewall for external access
+      block:
+        - name: Allow SSH
+          ufw:
+            rule: allow
+            port: '22'
+            proto: tcp
+
+        - name: Allow HTTP
+          ufw:
+            rule: allow
+            port: '80'
+            proto: tcp
+
+        - name: Allow HTTPS
+          ufw:
+            rule: allow
+            port: '443'
+            proto: tcp
+
+        - name: Allow health check port
+          ufw:
+            rule: allow
+            port: '8080'
+            proto: tcp
+            src: '192.168.1.0/24'
+
+        - name: Enable UFW
+          ufw:
+            state: enabled
+      when: enable_external_access
+
+    - name: Configure fail2ban for NGINX
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          bantime = 3600
+          findtime = 600
+          maxretry = 5
+
+          [nginx-http-auth]
+          enabled = true
+          port = http,https
+          logpath = /var/log/nginx/error.log
+
+          [nginx-noscript]
+          enabled = true
+          port = http,https
+          logpath = /var/log/nginx/access.log
+          maxretry = 6
+
+          [nginx-badbots]
+          enabled = true
+          port = http,https
+          logpath = /var/log/nginx/access.log
+          maxretry = 2
+
+          [nginx-noproxy]
+          enabled = true
+          port = http,https
+          logpath = /var/log/nginx/access.log
+          maxretry = 2
+      when: enable_external_access
+
+    - name: Start and enable fail2ban
+      systemd:
+        name: fail2ban
+        state: started
+        enabled: yes
+      when: enable_external_access
+
+    - name: Stop NGINX service before configuration
+      systemd:
+        name: nginx
+        state: stopped
+
+    - name: Backup original nginx.conf
+      copy:
+        src: /etc/nginx/nginx.conf
+        dest: /etc/nginx/nginx.conf.backup
+        remote_src: yes
+        backup: yes
+      ignore_errors: yes
+
+    - name: Remove default NGINX site and any existing Marvel configurations
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/nginx/sites-enabled/default
+        - /etc/nginx/sites-available/default
+        - /etc/nginx/sites-enabled/marvel-ingress
+        - /etc/nginx/sites-enabled/marvel-ingress-external
+
+    - name: Create main nginx configuration for external access
+      copy:
+        dest: /etc/nginx/nginx.conf
+        content: |
+          user www-data;
+          worker_processes auto;
+          pid /run/nginx.pid;
+          include /etc/nginx/modules-enabled/*.conf;
+
+          events {
+              worker_connections 1024;
+              use epoll;
+              multi_accept on;
+          }
+
+          http {
+              # Basic Settings
+              sendfile on;
+              tcp_nopush on;
+              tcp_nodelay on;
+              keepalive_timeout 65;
+              types_hash_max_size 2048;
+              server_tokens off;
+              server_name_in_redirect off;
+
+              # Security headers
+              add_header X-Frame-Options "SAMEORIGIN" always;
+              add_header X-XSS-Protection "1; mode=block" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              add_header Referrer-Policy "no-referrer-when-downgrade" always;
+              add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+
+              # Rate limiting
+              limit_req_zone $binary_remote_addr zone=login:10m rate=10r/m;
+              limit_req_zone $binary_remote_addr zone=general:10m rate=1r/s;
+
+              include /etc/nginx/mime.types;
+              default_type application/octet-stream;
+
+              # Logging Settings with real IP
+              set_real_ip_from 10.0.0.0/8;
+              set_real_ip_from 172.16.0.0/12;
+              set_real_ip_from 192.168.0.0/16;
+              real_ip_header X-Forwarded-For;
+              real_ip_recursive on;
+
+              log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                             '$status $body_bytes_sent "$http_referer" '
+                             '"$http_user_agent" "$http_x_forwarded_for" '
+                             'upstream: $upstream_addr rt: $request_time';
+
+              access_log /var/log/nginx/access.log main;
+              error_log /var/log/nginx/error.log warn;
+
+              # Gzip Settings
+              gzip on;
+              gzip_vary on;
+              gzip_proxied any;
+              gzip_comp_level 6;
+              gzip_types
+                  text/plain
+                  text/css
+                  text/xml
+                  text/javascript
+                  application/json
+                  application/javascript
+                  application/xml+rss
+                  application/atom+xml
+                  image/svg+xml;
+
+              # Upstream definitions for load balancing and failover
+              upstream k8s_ingress {
+                  # Primary: LoadBalancer IP
+                  server {{ k8s_ingress_ip }}:{{ k8s_ingress_port }} max_fails=3 fail_timeout=30s;
+                  # Backup: NodePort access
+                  server {{ k8s_node_ip }}:{{ k8s_nodeport }} backup;
+              }
+
+              # Health check endpoint (internal only)
+              server {
+                  listen 8080;
+                  server_name localhost;
+                  
+                  # Restrict to local network
+                  allow 192.168.1.0/24;
+                  allow 127.0.0.1;
+                  deny all;
+                  
+                  location /health {
+                      access_log off;
+                      return 200 "healthy\n";
+                      add_header Content-Type text/plain;
+                  }
+
+                  location /nginx_status {
+                      stub_status on;
+                      access_log off;
+                  }
+              }
+
+              # Include virtual host configurations
+              include /etc/nginx/sites-enabled/*;
+          }
+        backup: yes
+
+    - name: Create sites-available directory
+      file:
+        path: /etc/nginx/sites-available
+        state: directory
+        mode: '0755'
+
+    - name: Create sites-enabled directory
+      file:
+        path: /etc/nginx/sites-enabled
+        state: directory
+        mode: '0755'
+
+    - name: Create Marvel domains reverse proxy configuration for external access
+      copy:
+        dest: /etc/nginx/sites-available/marvel-ingress-external
+        content: |
+          # Marvel MCU Ingress Reverse Proxy - External Access Configuration
+          
+          # Shield service (shield.mcu.com)
+          server {
+              listen 80;
+              server_name shield.mcu.com;
+              
+              # Rate limiting
+              limit_req zone=general burst=5 nodelay;
+              
+              # Security headers
+              add_header X-Frame-Options "SAMEORIGIN" always;
+              add_header X-XSS-Protection "1; mode=block" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              
+              # Proxy settings for external access
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Host $server_name;
+              proxy_redirect off;
+              
+              # Buffer settings for external traffic
+              proxy_buffering on;
+              proxy_buffer_size 128k;
+              proxy_buffers 4 256k;
+              proxy_busy_buffers_size 256k;
+              
+              # Timeouts
+              proxy_connect_timeout 30s;
+              proxy_send_timeout 30s;
+              proxy_read_timeout 30s;
+              
+              location / {
+                  proxy_pass http://k8s_ingress;
+                  
+                  # Health check and error handling
+                  proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+                  proxy_next_upstream_tries 2;
+                  proxy_next_upstream_timeout 30s;
+              }
+
+              # Block common attack patterns
+              location ~ /\. {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+
+              location ~* \.(php|jsp|asp)$ {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+          }
+
+          # Hydra service (hydra.mcu.com)  
+          server {
+              listen 80;
+              server_name hydra.mcu.com;
+              
+              # Rate limiting
+              limit_req zone=general burst=5 nodelay;
+              
+              # Security headers
+              add_header X-Frame-Options "SAMEORIGIN" always;
+              add_header X-XSS-Protection "1; mode=block" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              
+              # Proxy settings for external access
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Host $server_name;
+              proxy_redirect off;
+              
+              # Buffer settings for external traffic
+              proxy_buffering on;
+              proxy_buffer_size 128k;
+              proxy_buffers 4 256k;
+              proxy_busy_buffers_size 256k;
+              
+              # Timeouts
+              proxy_connect_timeout 30s;
+              proxy_send_timeout 30s;
+              proxy_read_timeout 30s;
+              
+              location / {
+                  proxy_pass http://k8s_ingress;
+                  
+                  # Health check and error handling
+                  proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+                  proxy_next_upstream_tries 2;
+                  proxy_next_upstream_timeout 30s;
+              }
+
+              # Block common attack patterns
+              location ~ /\. {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+
+              location ~* \.(php|jsp|asp)$ {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+          }
+
+          # Main MCU domain with path-based routing (mcu.com)
+          server {
+              listen 80;
+              server_name mcu.com;
+              
+              # Rate limiting
+              limit_req zone=general burst=5 nodelay;
+              
+              # Security headers
+              add_header X-Frame-Options "SAMEORIGIN" always;
+              add_header X-XSS-Protection "1; mode=block" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              
+              # Proxy settings for external access
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Host $server_name;
+              proxy_redirect off;
+              
+              # Buffer settings for external traffic
+              proxy_buffering on;
+              proxy_buffer_size 128k;
+              proxy_buffers 4 256k;
+              proxy_busy_buffers_size 256k;
+              
+              # Timeouts
+              proxy_connect_timeout 30s;
+              proxy_send_timeout 30s;
+              proxy_read_timeout 30s;
+              
+              # Root location
+              location / {
+                  proxy_pass http://k8s_ingress;
+                  
+                  # Health check and error handling
+                  proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+                  proxy_next_upstream_tries 2;
+                  proxy_next_upstream_timeout 30s;
+              }
+              
+              # Shield path
+              location /shield {
+                  proxy_pass http://k8s_ingress;
+                  
+                  proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+                  proxy_next_upstream_tries 2;
+                  proxy_next_upstream_timeout 30s;
+              }
+              
+              # Hydra path  
+              location /hydra {
+                  proxy_pass http://k8s_ingress;
+                  
+                  proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+                  proxy_next_upstream_tries 2;
+                  proxy_next_upstream_timeout 30s;
+              }
+
+              # Block common attack patterns
+              location ~ /\. {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+
+              location ~* \.(php|jsp|asp)$ {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+          }
+
+          # Direct IP access server block - Helpful information
+          server {
+              listen 80;
+              server_name {{ k8s_node_ip }};
+              
+              # Rate limiting for direct IP access
+              limit_req zone=general burst=5 nodelay;
+              
+              location / {
+                  return 200 "Marvel MCU Services Available:\n\nServices:\n- http://shield.mcu.com (Agents of S.H.I.E.L.D)\n- http://hydra.mcu.com (Agents of Hydra)\n- http://mcu.com/shield (Agents of S.H.I.E.L.D via path)\n- http://mcu.com/hydra (Agents of Hydra via path)\n\nConfiguration Instructions:\n1. Add to your hosts file:\n   {{ k8s_node_ip }} shield.mcu.com\n   {{ k8s_node_ip }} hydra.mcu.com\n   {{ k8s_node_ip }} mcu.com\n\n2. Windows hosts file location:\n   C:\\Windows\\System32\\drivers\\etc\\hosts\n\n3. Linux/Mac hosts file location:\n   /etc/hosts\n\nExternal Access:\n- Configure port forwarding on your router\n- Port 80 -> {{ k8s_node_ip }}:80\n- Port 443 -> {{ k8s_node_ip }}:443\n\nStatus: NGINX Reverse Proxy Active\nBackend: Kubernetes Ingress Controller\n";
+                  add_header Content-Type text/plain;
+                  add_header X-Marvel-Services "shield.mcu.com,hydra.mcu.com,mcu.com";
+              }
+
+              # Health check endpoint for direct IP
+              location /health {
+                  return 200 "OK - Marvel MCU Services Running\n";
+                  add_header Content-Type text/plain;
+                  access_log off;
+              }
+
+              # Block common attack patterns on direct IP
+              location ~ /\. {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+
+              location ~* \.(php|jsp|asp)$ {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+          }
+
+          # Default server block (catch-all) - Enhanced security
+          server {
+              listen 80 default_server;
+              server_name _;
+              
+              # Log suspicious requests
+              access_log /var/log/nginx/suspicious.log main;
+              
+              # Rate limit default server heavily
+              limit_req zone=general burst=1 nodelay;
+              
+              location / {
+                  return 444; # Close connection without response
+              }
+              
+              # Return 444 for common bot requests
+              location ~* /(wp-admin|wp-login|admin|phpmyadmin|.php) {
+                  access_log /var/log/nginx/blocked.log main;
+                  return 444;
+              }
+          }
+        backup: yes
+
+    - name: Enable marvel-ingress-external site
+      file:
+        src: /etc/nginx/sites-available/marvel-ingress-external
+        dest: /etc/nginx/sites-enabled/marvel-ingress-external
+        state: link
+
+    - name: Test NGINX configuration
+      command: nginx -t
+      register: nginx_test
+      failed_when: nginx_test.rc != 0
+
+    - name: Start and enable NGINX service
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Create enhanced log rotation for nginx
+      copy:
+        dest: /etc/logrotate.d/nginx-reverse-proxy
+        content: |
+          /var/log/nginx/*.log {
+              daily
+              missingok
+              rotate 52
+              compress
+              delaycompress
+              notifempty
+              create 0644 www-data adm
+              sharedscripts
+              prerotate
+                  if [ -d /etc/logrotate.d/httpd-prerotate ]; then \
+                      run-parts /etc/logrotate.d/httpd-prerotate; \
+                  fi \
+              endscript
+              postrotate
+                  invoke-rc.d nginx rotate >/dev/null 2>&1
+              endscript
+          }
+
+    - name: Check NGINX status
+      systemd:
+        name: nginx
+      register: nginx_status
+
+    - name: Display NGINX status
+      debug:
+        msg: "NGINX is {{ nginx_status.status.ActiveState }}"
+
+    - name: Test upstream connectivity to LoadBalancer IP
+      uri:
+        url: "http://{{ k8s_ingress_ip }}:{{ k8s_ingress_port }}"
+        method: GET
+        headers:
+          Host: "shield.mcu.com"
+        timeout: 10
+      register: lb_test
+      ignore_errors: yes
+
+    - name: Test upstream connectivity to NodePort
+      uri:
+        url: "http://{{ k8s_node_ip }}:{{ k8s_nodeport }}"
+        method: GET
+        headers:
+          Host: "shield.mcu.com"
+        timeout: 10
+      register: nodeport_test
+      ignore_errors: yes
+
+    - name: Display connectivity test results
+      debug:
+        msg: |
+          LoadBalancer IP test: {{ 'SUCCESS' if lb_test.status == 200 else 'FAILED' }}
+          NodePort test: {{ 'SUCCESS' if nodeport_test.status == 200 else 'FAILED' }}
+
+    - name: Get public IP address
+      uri:
+        url: http://ipinfo.io/ip
+        return_content: yes
+      register: public_ip
+      ignore_errors: yes
+
+    - name: Create enhanced monitoring script
+      copy:
+        dest: /usr/local/bin/check-k8s-ingress.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Kubernetes Ingress Health Check Script - Enhanced for external access
+          
+          LOG_FILE="/var/log/nginx/k8s-ingress-health.log"
+          
+          echo "$(date): Starting K8s ingress health check" >> $LOG_FILE
+          
+          # Test LoadBalancer IP
+          if curl -H "Host: shield.mcu.com" -s --max-time 5 http://{{ k8s_ingress_ip }}:{{ k8s_ingress_port }} >/dev/null 2>&1; then
+              echo "$(date): LoadBalancer IP {{ k8s_ingress_ip }} is healthy" >> $LOG_FILE
+          else
+              echo "$(date): WARNING - LoadBalancer IP {{ k8s_ingress_ip }} is not responding" >> $LOG_FILE
+          fi
+          
+          # Test NodePort
+          if curl -H "Host: shield.mcu.com" -s --max-time 5 http://{{ k8s_node_ip }}:{{ k8s_nodeport }} >/dev/null 2>&1; then
+              echo "$(date): NodePort {{ k8s_node_ip }}:{{ k8s_nodeport }} is healthy" >> $LOG_FILE
+          else
+              echo "$(date): ERROR - NodePort {{ k8s_node_ip }}:{{ k8s_nodeport }} is not responding" >> $LOG_FILE
+          fi
+
+          # Check NGINX status
+          if systemctl is-active --quiet nginx; then
+              echo "$(date): NGINX service is running" >> $LOG_FILE
+          else
+              echo "$(date): CRITICAL - NGINX service is not running" >> $LOG_FILE
+          fi
+
+          # Check for fail2ban blocks
+          if command -v fail2ban-client &> /dev/null; then
+              BANNED_COUNT=$(fail2ban-client status nginx-http-auth 2>/dev/null | grep "Currently banned" | awk '{print $4}' || echo "0")
+              if [[ "$BANNED_COUNT" -gt 0 ]]; then
+                  echo "$(date): INFO - $BANNED_COUNT IPs currently banned by fail2ban" >> $LOG_FILE
+              fi
+          fi
+
+    - name: Create cron job for enhanced health monitoring
+      cron:
+        name: "K8s Ingress Health Check"
+        minute: "*/5"
+        job: "/usr/local/bin/check-k8s-ingress.sh"
+        user: root
+
+    - name: Display setup completion message
+      debug:
+        msg: |
+          🎉 NGINX Reverse Proxy setup complete for EXTERNAL ACCESS!
+          
+          📍 Public IP: {{ public_ip.content.strip() if public_ip.content is defined else 'Unable to detect' }}
+          📍 Local IP: {{ k8s_node_ip }}
+          
+          🔧 ROUTER CONFIGURATION REQUIRED:
+          Port Forward: 80 → {{ k8s_node_ip }}:80
+          Port Forward: 443 → {{ k8s_node_ip }}:443
+          
+          🌐 External Access URLs (after DNS setup):
+          - http://shield.mcu.com
+          - http://hydra.mcu.com  
+          - http://mcu.com/shield
+          - http://mcu.com/hydra
+          
+          🔒 Security Features Enabled:
+          - UFW Firewall
+          - Fail2ban protection
+          - Rate limiting
+          - Security headers
+          - Attack pattern blocking
+
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
