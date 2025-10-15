@@ -1,0 +1,35 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Update NGINX reverse proxy configuration for Kubernetes ingress
+      copy:
+        dest: /etc/nginx/sites-available/website
+        content: |
+          server {
+              listen 80;
+              listen [::]:80;
+              
+              server_name 192.168.1.114;
+              
+              # Logging
+              access_log /var/log/nginx/website-access.log;
+              error_log /var/log/nginx/website-error.log;
+              
+              location / {
+                  proxy_pass http://172.23.21.240;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+        mode: '0644'
+
+    - name: Test NGINX configuration
+      command: nginx -t
+
+    - name: Reload NGINX configuration
+      systemd:
+        name: nginx
+        state: reloaded
