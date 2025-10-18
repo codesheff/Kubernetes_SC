@@ -88,6 +88,7 @@ data:
                 <h1 class="display-4 mb-4">🌟 MCU Portal</h1>
                 <p class="lead">Welcome to the Marvel Cinematic Universe Application Portal</p>
                 <p class="text-muted">Select your organization below or use direct access links</p>
+                <p class="text-muted">or don't ... whatever</p>
             </div>
 
             <div class="row">
@@ -97,7 +98,7 @@ data:
                         <p>Strategic Homeland Intervention, Enforcement and Logistics Division</p>
                         <p><strong>Mission:</strong> Protecting the world from extraordinary threats</p>
                         <div>
-                            <a href="http://shield.mcu.com" class="btn btn-custom">🔗 shield.mcu.com</a>
+                            <a href="http://shield.itosbl.com" class="btn btn-custom">🔗 shield.itosbl.com</a>
                             <a href="/shield" class="btn btn-custom">📁 /shield</a>
                         </div>
                     </div>
@@ -108,7 +109,7 @@ data:
                         <p>Ancient secret organization seeking world domination</p>
                         <p><strong>Motto:</strong> "Cut off one head, two more shall take its place"</p>
                         <div>
-                            <a href="http://hydra.mcu.com" class="btn btn-custom">🔗 hydra.mcu.com</a>
+                            <a href="http://hydra.itosbl.com" class="btn btn-custom">🔗 hydra.itosbl.com</a>
                             <a href="/hydra" class="btn btn-custom">📁 /hydra</a>
                         </div>
                     </div>
@@ -121,13 +122,13 @@ data:
                     <div class="row">
                         <div class="col-md-6">
                             <strong>Host-Based Routing:</strong><br>
-                            <code>shield.mcu.com</code><br>
-                            <code>hydra.mcu.com</code>
+                            <code>shield.itosbl.com</code><br>
+                            <code>hydra.itosbl.com</code>
                         </div>
                         <div class="col-md-6">
                             <strong>Path-Based Routing:</strong><br>
-                            <code>mcu.com/shield</code><br>
-                            <code>mcu.com/hydra</code>
+                            <code>itosbl.com/shield</code><br>
+                            <code>itosbl.com/hydra</code>
                         </div>
                     </div>
                 </div>
