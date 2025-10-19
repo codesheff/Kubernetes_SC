@@ -1,0 +1,56 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Create Flannel subnet.env persistence script
+      copy:
+        dest: /usr/local/bin/ensure-flannel-subnet.sh
+        content: |
+          #!/bin/bash
+          # Ensure Flannel subnet.env exists to prevent networking deadlock
+          
+          SUBNET_FILE="/run/flannel/subnet.env"
+          
+          # Create directory if it doesn't exist
+          mkdir -p /run/flannel
+          
+          # Create subnet.env if it doesn't exist
+          if [ ! -f "$SUBNET_FILE" ]; then
+            echo "Creating Flannel subnet.env file..."
+            cat > "$SUBNET_FILE" << EOF
+          FLANNEL_NETWORK=10.244.0.0/16
+          FLANNEL_SUBNET=10.244.0.1/24
+          FLANNEL_MTU=1450
+          FLANNEL_IPMASQ=true
+          EOF
+            chmod 644 "$SUBNET_FILE"
+            echo "Flannel subnet.env created"
+          else
+            echo "Flannel subnet.env already exists"
+          fi
+        mode: '0755'
+
+    - name: Create Flannel subnet persistence systemd service
+      copy:
+        dest: /etc/systemd/system/flannel-subnet-persist.service
+        content: |
+          [Unit]
+          Description=Ensure Flannel Subnet Environment Persists
+          After=local-fs.target
+          Before=kubelet.service
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/ensure-flannel-subnet.sh
+          RemainAfterExit=yes
+          
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Enable Flannel subnet persistence service
+      systemd:
+        name: flannel-subnet-persist.service
+        enabled: yes
+        daemon_reload: yes
+        state: started

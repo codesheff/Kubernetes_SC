@@ -1,0 +1,140 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Create Flannel recovery script
+      copy:
+        dest: /usr/local/bin/flannel-recovery.sh
+        content: |
+          #!/bin/bash
+          # Flannel Recovery Script - Ensures Flannel starts properly after reboot
+          
+          # Wait for kubelet to be ready
+          while ! systemctl is-active --quiet kubelet; do
+            echo "Waiting for kubelet to start..."
+            sleep 5
+          done
+          
+          # Wait for API server to be responsive
+          while ! kubectl get nodes &>/dev/null; do
+            echo "Waiting for API server..."
+            sleep 5
+          done
+          
+          # Check if Flannel subnet file exists
+          if [ ! -f /run/flannel/subnet.env ]; then
+            echo "Flannel subnet.env missing, restarting Flannel pods..."
+            kubectl delete pod -n kube-flannel -l app=flannel --force --grace-period=0 || true
+            sleep 10
+          fi
+          
+          # Ensure node is untainted for single-node setup
+          kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+          
+          echo "Flannel recovery completed"
+        mode: '0755'
+
+    - name: Create Flannel recovery systemd service
+      copy:
+        dest: /etc/systemd/system/flannel-recovery.service
+        content: |
+          [Unit]
+          Description=Flannel Recovery Service
+          After=kubelet.service
+          Wants=kubelet.service
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/flannel-recovery.sh
+          RemainAfterExit=yes
+          StandardOutput=journal
+          StandardError=journal
+          
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Enable Flannel recovery service
+      systemd:
+        name: flannel-recovery.service
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Configure kubelet service dependencies
+      lineinfile:
+        path: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+        line: 'Restart=always'
+        insertafter: '^\[Service\]'
+        create: no
+
+    - name: Ensure containerd starts before kubelet
+      lineinfile:
+        path: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+        line: 'After=containerd.service'
+        insertafter: '^\[Unit\]'
+        create: no
+
+    - name: Set kubelet restart delay
+      lineinfile:
+        path: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+        line: 'RestartSec=30'
+        insertafter: 'Restart=always'
+        create: no
+
+    - name: Create pod cleanup script for Unknown status pods
+      copy:
+        dest: /usr/local/bin/cleanup-unknown-pods.sh
+        content: |
+          #!/bin/bash
+          # Clean up pods in Unknown status after reboot
+          
+          echo "Waiting for API server to be ready..."
+          while ! kubectl get nodes &>/dev/null; do
+            sleep 10
+          done
+          
+          echo "Cleaning up Unknown status pods..."
+          kubectl get pods -A --field-selector=status.phase=Unknown --no-headers | while read namespace pod rest; do
+            if [ ! -z "$pod" ]; then
+              echo "Deleting Unknown pod: $namespace/$pod"
+              kubectl delete pod "$pod" -n "$namespace" --force --grace-period=0 || true
+            fi
+          done
+          
+          echo "Pod cleanup completed"
+        mode: '0755'
+
+    - name: Create pod cleanup timer
+      copy:
+        dest: /etc/systemd/system/cleanup-unknown-pods.timer
+        content: |
+          [Unit]
+          Description=Cleanup Unknown Pods Timer
+          
+          [Timer]
+          OnBootSec=2min
+          
+          [Install]
+          WantedBy=timers.target
+        mode: '0644'
+
+    - name: Create pod cleanup service
+      copy:
+        dest: /etc/systemd/system/cleanup-unknown-pods.service
+        content: |
+          [Unit]
+          Description=Cleanup Unknown Status Pods
+          After=flannel-recovery.service
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/cleanup-unknown-pods.sh
+          StandardOutput=journal
+          StandardError=journal
+        mode: '0644'
+
+    - name: Enable pod cleanup timer
+      systemd:
+        name: cleanup-unknown-pods.timer
+        enabled: yes
+        daemon_reload: yes

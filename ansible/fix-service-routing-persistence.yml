@@ -1,0 +1,49 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Create iptables rule persistence script for Kubernetes service
+      copy:
+        dest: /usr/local/bin/setup-k8s-service-routing.sh
+        content: |
+          #!/bin/bash
+          # Ensure Kubernetes service IP routing works
+          # This fixes the bootstrap networking issue
+          
+          # Check if rule already exists
+          if ! iptables -t nat -C OUTPUT -d 10.96.0.1 -p tcp --dport 443 -j DNAT --to-destination 192.168.1.114:6443 2>/dev/null; then
+            echo "Adding Kubernetes service IP routing rule..."
+            iptables -t nat -A OUTPUT -d 10.96.0.1 -p tcp --dport 443 -j DNAT --to-destination 192.168.1.114:6443
+          fi
+          
+          if ! iptables -t nat -C PREROUTING -d 10.96.0.1 -p tcp --dport 443 -j DNAT --to-destination 192.168.1.114:6443 2>/dev/null; then
+            iptables -t nat -A PREROUTING -d 10.96.0.1 -p tcp --dport 443 -j DNAT --to-destination 192.168.1.114:6443
+          fi
+          
+          echo "Kubernetes service IP routing configured"
+        mode: '0755'
+
+    - name: Create systemd service for Kubernetes service routing
+      copy:
+        dest: /etc/systemd/system/k8s-service-routing.service
+        content: |
+          [Unit]
+          Description=Kubernetes Service IP Routing Fix
+          After=network.target
+          Before=kubelet.service
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/setup-k8s-service-routing.sh
+          RemainAfterExit=yes
+          
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Enable Kubernetes service routing service
+      systemd:
+        name: k8s-service-routing.service
+        enabled: yes
+        daemon_reload: yes
+        state: started
